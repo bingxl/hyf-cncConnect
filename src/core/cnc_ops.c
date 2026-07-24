@@ -524,3 +524,208 @@ int monitor_loop(unsigned short handle, int interval_ms,
 
     return 0;
 }
+
+int fetch_system_info(unsigned short handle, CncSystemInfo *info)
+{
+    ODBSYS raw;
+    short ret;
+    memset(info, 0, sizeof(*info));
+    ret = cnc_sysinfo(handle, &raw);
+    if (ret != EW_OK) return -1;
+    info->cnc_type[0] = raw.cnc_type[0];
+    info->cnc_type[1] = raw.cnc_type[1];
+    info->cnc_type[2] = 0;
+    info->mt_type[0] = raw.mt_type[0];
+    info->mt_type[1] = raw.mt_type[1];
+    info->mt_type[2] = 0;
+    memcpy(info->series, raw.series, 4);
+    info->series[4] = 0;
+    memcpy(info->version, raw.version, 4);
+    info->version[4] = 0;
+    info->max_axis = (int)raw.max_axis;
+    memcpy(info->axes, raw.axes, 2);
+    info->axes[2] = 0;
+    return 0;
+}
+
+int fetch_status(unsigned short handle, CncStatus *status)
+{
+    ODBST st;
+    short ret;
+    memset(status, 0, sizeof(*status));
+    ret = cnc_statinfo(handle, &st);
+    if (ret != EW_OK) return -1;
+    status->tmmode = (int)st.tmmode;
+    status->aut = (int)st.aut;
+    status->run = (int)st.run;
+    status->motion = (int)st.motion;
+    status->mstb = (int)st.mstb;
+    status->emergency = (int)st.emergency;
+    status->alarm = (int)st.alarm;
+    status->edit = (int)st.edit;
+    return 0;
+}
+
+int fetch_positions(unsigned short handle, CncPositions *pos)
+{
+    ODBAXIS raw;
+    short ret;
+    int i, count;
+    const char *names = AXIS_NAMES;
+    memset(pos, 0, sizeof(*pos));
+
+    ret = cnc_absolute(handle, 0, ALL_AXES, &raw);
+    if (ret == EW_OK) {
+        count = raw.type;
+        pos->count = count;
+        for (i = 0; i < count && i < CNC_MAX_AXES; i++)
+            pos->absolute[i] = raw.data[i] / 10000.0;
+    }
+
+    ret = cnc_machine(handle, 0, ALL_AXES, &raw);
+    if (ret == EW_OK) {
+        count = raw.type;
+        if (pos->count == 0) pos->count = count;
+        for (i = 0; i < count && i < CNC_MAX_AXES; i++)
+            pos->machine[i] = raw.data[i] / 10000.0;
+    }
+
+    ret = cnc_relative(handle, 0, ALL_AXES, &raw);
+    if (ret == EW_OK) {
+        count = raw.type;
+        for (i = 0; i < count && i < CNC_MAX_AXES; i++)
+            pos->relative[i] = raw.data[i] / 10000.0;
+    }
+
+    ret = cnc_distance(handle, 0, ALL_AXES, &raw);
+    if (ret == EW_OK) {
+        count = raw.type;
+        for (i = 0; i < count && i < CNC_MAX_AXES; i++)
+            pos->distance[i] = raw.data[i] / 10000.0;
+    }
+
+    return 0;
+}
+
+int fetch_alarms(unsigned short handle, CncAlarms *alarms)
+{
+    ODBALM alm;
+    ODBALMMSG almmsg;
+    short len;
+    short ret;
+    int i;
+    memset(alarms, 0, sizeof(*alarms));
+
+    for (i = 0; i < CNC_MAX_ALARMS; i++) {
+        len = 0;
+        memset(&almmsg, 0, sizeof(almmsg));
+        ret = cnc_rdalmmsg(handle, (short)i, &len, &almmsg);
+        if (ret != EW_OK) break;
+        if (almmsg.alm_no == 0) break;
+        alarms->alarm_no[i] = almmsg.alm_no;
+        alarms->axis[i] = almmsg.axis;
+        memcpy(alarms->msg[i], almmsg.alm_msg, 31);
+        alarms->msg[i][31] = 0;
+    }
+    alarms->count = i;
+    return 0;
+}
+
+int fetch_act_data(unsigned short handle, CncActData *act)
+{
+    ODBACT feed, spindle;
+    short ret;
+    memset(act, 0, sizeof(*act));
+    ret = cnc_actf(handle, &feed);
+    if (ret == EW_OK) act->feedrate = feed.data;
+    ret = cnc_acts(handle, &spindle);
+    if (ret == EW_OK) act->spindle = spindle.data;
+    return 0;
+}
+
+int fetch_program_info(unsigned short handle, CncProgramInfo *prog)
+{
+    ODBPRO prg;
+    ODBEXEPRG exeprg;
+    ODBSEQ seq;
+    long blk;
+    short ret;
+    memset(prog, 0, sizeof(*prog));
+    ret = cnc_rdprgnum(handle, &prg);
+    if (ret == EW_OK) {
+        prog->prg_number = (int)prg.data;
+        prog->prg_main = (int)prg.mdata;
+    }
+    memset(&exeprg, 0, sizeof(exeprg));
+    ret = cnc_exeprgname(handle, &exeprg);
+    if (ret == EW_OK) memcpy(prog->prg_name, exeprg.name, 35);
+    prog->prg_name[35] = 0;
+    ret = cnc_rdseqnum(handle, &seq);
+    if (ret == EW_OK) prog->seq_number = seq.data;
+    ret = cnc_rdblkcount(handle, &blk);
+    if (ret == EW_OK) prog->blk_count = blk;
+    return 0;
+}
+
+int fetch_dynamic(unsigned short handle, CncDynamicData *dyn)
+{
+    ODBDY2 raw;
+    short ret;
+    memset(dyn, 0, sizeof(*dyn));
+    ret = cnc_rddynamic2(handle, 0, sizeof(raw), &raw);
+    if (ret != EW_OK) return -1;
+    dyn->actf = raw.actf;
+    dyn->acts = raw.acts;
+    dyn->alarm = raw.alarm;
+    dyn->prgnum = raw.prgnum;
+    dyn->prgmnum = raw.prgmnum;
+    dyn->seqnum = raw.seqnum;
+    dyn->axis = (int)raw.axis;
+    return 0;
+}
+
+int fetch_program_list(unsigned short handle, CncProgramList *list)
+{
+    PRGDIR2 dir[CNC_MAX_PROGRAMS];
+    short ret, count, i;
+    long top = 0;
+    memset(list, 0, sizeof(*list));
+    ret = cnc_rdprogdir2(handle, 2, &top, &count, dir);
+    if (ret != EW_OK) return -1;
+    list->count = count;
+    for (i = 0; i < count && i < CNC_MAX_PROGRAMS; i++) {
+        list->number[i] = dir[i].number;
+        list->length[i] = dir[i].length;
+        memcpy(list->comment[i], dir[i].comment, 35);
+        list->comment[i][35] = 0;
+    }
+    return 0;
+}
+
+int fetch_machine_data(const char *ip, int port, CncMachineData *data)
+{
+    unsigned short handle;
+    memset(data, 0, sizeof(*data));
+    data->ok = 0;
+
+    if (cnc_connect(ip, port, &handle) != 0) {
+        _snprintf(data->error_msg, sizeof(data->error_msg),
+                  "连接失败: %s:%d", ip, port);
+        return -1;
+    }
+
+    cnc_settimeout(handle, 5);
+
+    fetch_system_info(handle, &data->sys);
+    fetch_status(handle, &data->status);
+    fetch_positions(handle, &data->pos);
+    fetch_alarms(handle, &data->alarms);
+    fetch_act_data(handle, &data->act);
+    fetch_program_info(handle, &data->prog);
+    fetch_dynamic(handle, &data->dyn);
+    get_part_count(handle, &data->part_count);
+
+    cnc_disconnect(handle);
+    data->ok = 1;
+    return 0;
+}

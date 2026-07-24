@@ -1,0 +1,57 @@
+name: Release Build
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x86
+
+      - name: Configure CMake
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_C_COMPILER=cl.exe
+          -DCMAKE_CXX_COMPILER=cl.exe
+          -DCMAKE_LINKER=link.exe
+          -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Prepare package
+        run: |
+          mkdir deploy
+          Copy-Item build\src\imgui_ui\cnc_win32ui.exe deploy\
+          Copy-Item fwlib\Fwlib32.dll deploy\
+        shell: pwsh
+
+      - name: Get version
+        id: version
+        shell: bash
+        run: echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+
+      - name: Create zip
+        run: Compress-Archive -Path deploy\* -DestinationPath cnc-win32ui-${{ steps.version.outputs.tag }}.zip
+        shell: pwsh
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: cnc-win32ui-${{ steps.version.outputs.tag }}.zip
+          generate_release_notes: true
+          draft: false
+          prerelease: false

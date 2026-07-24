@@ -1,129 +1,108 @@
 @echo off
 REM ============================================================
-REM  Build script for CNC Monitor (FOCAS2)
-REM  Uses official FANUC fwlib32.h + Fwlib32.dll/.lib from:
-REM  https://github.com/strangesast/fwlib
-REM
-REM  Compiler: Visual Studio Build Tools (cl.exe)
-REM  Target:   x86 (32-bit) - required by Fwlib32.lib
+REM  Build script for CNC Monitor (CMake + MSVC)
+REM  Usage:
+REM    build.bat           - Configure and build (Release)
+REM    build.bat clean     - Clean build directory
+REM    build.bat debug     - Build Debug configuration
 REM ============================================================
 
 setlocal enabledelayedexpansion
-set "CACHE_FILE=%~dp0.vsbuild_cache"
-set "VCVARS="
+set "BUILD_DIR=build"
+set "CONFIG=Release"
 
-REM --- Check cache first ---
-if not exist "%CACHE_FILE%" goto :search_vs
-set /p VCVARS=<"%CACHE_FILE%"
-if "!VCVARS!"=="" goto :search_vs
-if exist "!VCVARS!" (
-    echo [1/5] Found cached VSBuild path
-    goto :setup_env
+if "%1"=="clean" (
+    echo Cleaning build directory ...
+    if exist "%BUILD_DIR%" rmdir /s /q "%BUILD_DIR%"
+    echo Done.
+    exit /b 0
 )
-echo [1/5] Cache invalid, searching VSBuild ...
 
-:search_vs
-echo [1/5] Searching for Visual Studio ...
+if "%1"=="debug" set "CONFIG=Debug"
 
+REM --- Locate CMake ---
+where cmake >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] cmake not found in PATH
+    echo        Install CMake: https://cmake.org/download/
+    exit /b 1
+)
+
+REM --- Find and setup Visual Studio environment ---
 set "VCVARS="
+set "CACHE_FILE=%~dp0.vsbuild_cache"
 
-REM -- Check VS 18 (VS2026) --
-if not "!VCVARS!"=="" goto :search_2022
-set "TEST=%ProgramFiles%\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvarsall.bat"
-if exist "!TEST!" set "VCVARS=!TEST!"
-if not "!VCVARS!"=="" goto :save_cache
-set "TEST=%ProgramFiles%\Microsoft Visual Studio\18\BuildTools\VC\Auxiliary\Build\vcvarsall.bat"
-if exist "!TEST!" set "VCVARS=!TEST!"
-if not "!VCVARS!"=="" goto :save_cache
-set "TEST=%ProgramFiles%\Microsoft Visual Studio\18\Professional\VC\Auxiliary\Build\vcvarsall.bat"
-if exist "!TEST!" set "VCVARS=!TEST!"
-if not "!VCVARS!"=="" goto :save_cache
-set "TEST=%ProgramFiles%\Microsoft Visual Studio\18\Enterprise\VC\Auxiliary\Build\vcvarsall.bat"
-if exist "!TEST!" set "VCVARS=!TEST!"
-if not "!VCVARS!"=="" goto :save_cache
-set "TEST=%ProgramFiles(x86)%\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvarsall.bat"
-if exist "!TEST!" set "VCVARS=!TEST!"
-if not "!VCVARS!"=="" goto :save_cache
-set "TEST=%ProgramFiles(x86)%\Microsoft Visual Studio\18\BuildTools\VC\Auxiliary\Build\vcvarsall.bat"
-if exist "!TEST!" set "VCVARS=!TEST!"
-if not "!VCVARS!"=="" goto :save_cache
+if exist "%CACHE_FILE%" (
+    set /p VCVARS=<"%CACHE_FILE%"
+    if exist "!VCVARS!" goto :setup_env
+)
 
-:search_2022
-REM -- Check VS 2022 --
-if not "!VCVARS!"=="" goto :search_end
-set "TEST=%ProgramFiles%\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat"
-if exist "!TEST!" set "VCVARS=!TEST!"
-if not "!VCVARS!"=="" goto :save_cache
-set "TEST=%ProgramFiles%\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat"
-if exist "!TEST!" set "VCVARS=!TEST!"
-if not "!VCVARS!"=="" goto :save_cache
-set "TEST=%ProgramFiles%\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvarsall.bat"
-if exist "!TEST!" set "VCVARS=!TEST!"
-if not "!VCVARS!"=="" goto :save_cache
-set "TEST=%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat"
-if exist "!TEST!" set "VCVARS=!TEST!"
-if not "!VCVARS!"=="" goto :save_cache
-set "TEST=%ProgramFiles(x86)%\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat"
-if exist "!TEST!" set "VCVARS=!TEST!"
-if not "!VCVARS!"=="" goto :save_cache
-set "TEST=%ProgramFiles(x86)%\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat"
-if exist "!TEST!" set "VCVARS=!TEST!"
+REM -- VS 18 (VS2026) --
+for %%V in (Community BuildTools Professional Enterprise) do (
+    set "TEST=%ProgramFiles%\Microsoft Visual Studio\18\%%V\VC\Auxiliary\Build\vcvarsall.bat"
+    if exist "!TEST!" set "VCVARS=!TEST!"
+    if not "!VCVARS!"=="" goto :save_cache
+    set "TEST=%ProgramFiles(x86)%\Microsoft Visual Studio\18\%%V\VC\Auxiliary\Build\vcvarsall.bat"
+    if exist "!TEST!" set "VCVARS=!TEST!"
+    if not "!VCVARS!"=="" goto :save_cache
+)
 
-:search_end
+REM -- VS 2022 --
+for %%V in (Community BuildTools Professional Enterprise) do (
+    set "TEST=%ProgramFiles%\Microsoft Visual Studio\2022\%%V\VC\Auxiliary\Build\vcvarsall.bat"
+    if exist "!TEST!" set "VCVARS=!TEST!"
+    if not "!VCVARS!"=="" goto :save_cache
+    set "TEST=%ProgramFiles(x86)%\Microsoft Visual Studio\2022\%%V\VC\Auxiliary\Build\vcvarsall.bat"
+    if exist "!TEST!" set "VCVARS=!TEST!"
+    if not "!VCVARS!"=="" goto :save_cache
+)
+
 if "!VCVARS!"=="" (
     echo [ERROR] Cannot find Visual Studio (vcvarsall.bat)
-    echo        Searched: VS 18/2022 (BuildTools/Community/Professional/Enterprise)
     exit /b 1
 )
 
 :save_cache
-echo       Found: !VCVARS!
 echo !VCVARS!>"%CACHE_FILE%"
-echo       Saved to cache
 
 :setup_env
-echo [2/5] Setting up MSVC environment (x86) ...
+echo [1/3] Setting up MSVC environment (x86) ...
 call "!VCVARS!" x86 >nul 2>&1
 if errorlevel 1 (
     echo [ERROR] Failed to setup MSVC environment
     exit /b 1
 )
-echo       OK
 
-echo.
-echo [3/5] Compiling cnc_monitor.exe ...
-cl.exe /nologo /W3 /O2 /I fwlib /D ONO8D /Fe:cnc_monitor.exe main.c cnc_ops.c /link fwlib\Fwlib32.lib advapi32.lib
+REM --- Configure ---
+if not exist "%BUILD_DIR%" mkdir "%BUILD_DIR%"
+echo [2/3] Configuring (Ninja, %CONFIG%) ...
+cmake -S . -B "%BUILD_DIR%" -G Ninja -DCMAKE_BUILD_TYPE=%CONFIG% -DCMAKE_C_COMPILER=cl.exe -DCMAKE_LINKER=link.exe
 if errorlevel 1 (
-    echo.
-    echo [ERROR] Compilation of cnc_monitor.exe failed
+    echo [ERROR] CMake configure failed
     exit /b 1
 )
-echo       OK
 
-echo.
-echo [4/5] Compiling cnc_collect.exe ...
-cl.exe /nologo /W3 /O2 /I fwlib /D ONO8D /D _CRT_SECURE_NO_WARNINGS /Fe:cnc_collect.exe collect.c cnc_ops.c file_io.c /link fwlib\Fwlib32.lib advapi32.lib
+REM --- Build ---
+echo [3/3] Building (%CONFIG%) ...
+cmake --build "%BUILD_DIR%" --config %CONFIG%
 if errorlevel 1 (
-    echo.
-    echo [ERROR] Compilation of cnc_collect.exe failed
+    echo [ERROR] Build failed
     exit /b 1
 )
-echo       OK
-
-echo.
-echo [5/5] Copying Fwlib32.dll ...
-copy /Y fwlib\Fwlib32.dll . >nul 2>&1
-del /q *.obj 2>nul
 
 echo.
 echo ============================================================
-echo  Build successful: cnc_monitor.exe + cnc_collect.exe
+echo  Build successful!
+echo.
+echo  Executables:
+echo    %BUILD_DIR%\cnc_monitor.exe
+echo    %BUILD_DIR%\cnc_collect.exe
+echo    %BUILD_DIR%\cnc_win32ui.exe
 echo.
 echo  Usage:
-echo    cnc_monitor.exe ^<IP^> [port]   - Interactive CNC monitor
-echo    cnc_collect.exe                - Batch collect data from jichuang.txt
-echo.
-echo  Fwlib32.dll has been copied to current directory.
+echo    %BUILD_DIR%\cnc_monitor.exe ^<IP^> [port]
+echo    %BUILD_DIR%\cnc_collect.exe
+echo    %BUILD_DIR%\cnc_win32ui.exe
 echo ============================================================
 
 endlocal

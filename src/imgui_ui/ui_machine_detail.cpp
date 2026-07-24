@@ -1,0 +1,171 @@
+#include <thread>
+#include <mutex>
+#include <atomic>
+#include "imgui.h"
+#include "ui_machine_detail.h"
+#include "cnc_ops.h"
+#include "db_ops.h"
+
+extern DbHandle g_db;
+
+struct DetailState {
+    std::mutex mtx;
+    CncMachineData data = {};
+    std::atomic<bool> loading{false};
+    std::atomic<bool> loaded{false};
+    char name[DB_MAX_NAME] = "";
+};
+
+static DetailState s_detail;
+
+static void fetch_in_thread(const char *ip, int port)
+{
+    s_detail.loading = true;
+    s_detail.loaded = false;
+    CncMachineData data;
+    fetch_machine_data(ip, port, &data);
+    {
+        std::lock_guard<std::mutex> lock(s_detail.mtx);
+        s_detail.data = data;
+    }
+    s_detail.loaded = true;
+    s_detail.loading = false;
+}
+
+void ui_machine_detail_draw(int machine_id)
+{
+    if (machine_id <= 0 || !g_db) {
+        ImGui::TextDisabled("请选择一台机床");
+        return;
+    }
+
+    MachineRecord rec;
+    if (db_get_machine_by_id(g_db, machine_id, &rec) != 0) {
+        ImGui::Text("未找到机床信息");
+        return;
+    }
+
+    if (strcmp(s_detail.name, rec.name) != 0 || !s_detail.loaded) {
+        strncpy(s_detail.name, rec.name, DB_MAX_NAME - 1);
+        s_detail.data = {};
+        s_detail.loaded = false;
+
+        if (!s_detail.loading) {
+            std::thread t(fetch_in_thread, rec.ip, rec.port);
+            t.detach();
+        }
+    }
+
+    ImGui::Text("%s - 机床详情", rec.name);
+    ImGui::TextDisabled("IP: %s  端口: %d", rec.ip, rec.port);
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    if (s_detail.loading) {
+        ImGui::Text("正在获取数据...");
+        return;
+    }
+
+    if (!s_detail.loaded) return;
+
+    std::lock_guard<std::mutex> lock(s_detail.mtx);
+    const CncMachineData &d = s_detail.data;
+
+    if (!d.ok) {
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "连接失败: %s", d.error_msg);
+        if (ImGui::Button("重新连接")) {
+            s_detail.loaded = false;
+        }
+        return;
+    }
+
+    if (ImGui::BeginTable("##sysinfo", 2,
+            ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("项目", ImGuiTableColumnFlags_WidthFixed, 140);
+        ImGui::TableSetupColumn("值", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableHeadersRow();
+
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0); ImGui::TextUnformatted("系统类型");
+        ImGui::TableSetColumnIndex(1); ImGui::Text("%c%c / %.4s", d.sys.cnc_type[0], d.sys.cnc_type[1], d.sys.series);
+
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0); ImGui::TextUnformatted("版本");
+        ImGui::TableSetColumnIndex(1); ImGui::Text("%.4s / 最大轴数: %d", d.sys.version, d.sys.max_axis);
+
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0); ImGui::TextUnformatted("运行状态");
+        ImGui::TableSetColumnIndex(1);
+        ImGui::TextColored(d.status.run ? ImVec4(0.2f, 0.8f, 0.4f, 1.0f) : ImVec4(1.0f, 0.4f, 0.3f, 1.0f),
+            "%s", d.status.run ? "运行中" : "停止");
+        ImGui::SameLine();
+        ImGui::Text("  报警: %s  急停: %s",
+            d.status.alarm ? "是" : "否",
+            d.status.emergency ? "是" : "否");
+
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0); ImGui::TextUnformatted("进给/主轴");
+        ImGui::TableSetColumnIndex(1); ImGui::Text("进给: %ld  主轴: %ld", d.act.feedrate, d.act.spindle);
+
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0); ImGui::TextUnformatted("加工数量");
+        ImGui::TableSetColumnIndex(1); ImGui::Text("当前: %ld  要求: %ld  累计: %ld",
+            d.part_count.current, d.part_count.required, d.part_count.total);
+
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0); ImGui::TextUnformatted("程序号");
+        ImGui::TableSetColumnIndex(1); ImGui::Text("程序号: %d / 主程序: %d", d.prog.prg_number, d.prog.prg_main);
+
+        if (d.prog.prg_name[0]) {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0); ImGui::TextUnformatted("当前程序");
+            ImGui::TableSetColumnIndex(1); ImGui::TextUnformatted(d.prog.prg_name);
+        }
+
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0); ImGui::TextUnformatted("序列/块信息");
+        ImGui::TableSetColumnIndex(1); ImGui::Text("序列号: %ld  块计数: %ld", d.prog.seq_number, d.prog.blk_count);
+
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0); ImGui::TextUnformatted("动态轴数");
+        ImGui::TableSetColumnIndex(1); ImGui::Text("%d", d.dyn.axis);
+
+        ImGui::EndTable();
+    }
+
+    if (d.alarms.count > 0) {
+        ImGui::Spacing();
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "报警信息:");
+        for (int i = 0; i < d.alarms.count; i++) {
+            ImGui::BulletText("#%ld [轴%c] %s", d.alarms.alarm_no[i], d.alarms.axis[i], d.alarms.msg[i]);
+        }
+    }
+
+    if (d.pos.count > 0) {
+        ImGui::Spacing();
+        ImGui::Text("轴位置:");
+        if (ImGui::BeginTable("##positions", 4,
+                ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
+            ImGui::TableSetupColumn("轴");
+            ImGui::TableSetupColumn("绝对");
+            ImGui::TableSetupColumn("机械");
+            ImGui::TableSetupColumn("相对");
+            ImGui::TableHeadersRow();
+
+            const char *names = "XYZABCUVW";
+            for (int i = 0; i < d.pos.count && i < CNC_MAX_AXES; i++) {
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0); ImGui::Text("%c轴", names[i]);
+                ImGui::TableSetColumnIndex(1); ImGui::Text("%.4f", d.pos.absolute[i]);
+                ImGui::TableSetColumnIndex(2); ImGui::Text("%.4f", d.pos.machine[i]);
+                ImGui::TableSetColumnIndex(3); ImGui::Text("%.4f", d.pos.relative[i]);
+            }
+            ImGui::EndTable();
+        }
+    }
+
+    ImGui::Spacing();
+    if (ImGui::Button("刷新数据")) {
+        s_detail.loaded = false;
+    }
+}
