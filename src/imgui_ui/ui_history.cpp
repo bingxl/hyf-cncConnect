@@ -257,13 +257,13 @@ static void compute_diff_async(int batch_id, HistoryCalcState *state)
 
             for (int k = 0; k < hcount; k++) {
                 if (hist[k].machine_id == machines[j].id) {
-                    base_val = hist[k].current;
+                    base_val = hist[k].total;
                     break;
                 }
             }
 
             fetch_machine_data(machines[j].ip, machines[j].port, &data);
-            if (data.ok) cur_val = data.part_count.current;
+            if (data.ok) cur_val = data.part_count.total;
 
             items[j].current = cur_val;
             items[j].base = base_val;
