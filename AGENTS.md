@@ -14,9 +14,9 @@ A C-based CNC monitoring tool that communicates with FANUC CNC controllers via t
 | `db_ops.h/c` | SQLite database operations (machines, history, batches) |
 | `third_party/sqlite3/sqlite3.h/c` | SQLite 3.52.0 amalgamation |
 | `file_io.h/c` | Config file read (`jichuang.txt`) + result file write (`result.txt`) |
-| `fwlib/fwlib32.h` | FANUC FOCAS2 library header (16k+ lines) |
-| `fwlib/Fwlib32.dll` | Runtime DLL (required at runtime) |
-| `fwlib/Fwlib32.lib` | Import lib for MSVC linking |
+| `third_party/fwlib/fwlib32.h` | FANUC FOCAS2 library header (16k+ lines) |
+| `third_party/fwlib/Fwlib32.dll` | Runtime DLL (required at runtime) |
+| `third_party/fwlib/Fwlib32.lib` | Import lib for MSVC linking |
 | `build.bat` | Build script using MSVC (x86 target) |
 
 ## Build

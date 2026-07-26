@@ -2,7 +2,7 @@
 *.obj
 *.o
 *.lib
-!fwlib/*
+!third_party/fwlib/*
 result.txt
 .vsbuild_cache
 

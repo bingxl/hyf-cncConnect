@@ -19,7 +19,7 @@ if(MSVC)
 endif()
 
 # ---- FANUC fwlib ----
-set(FWLIB_DIR ${PROJECT_SOURCE_DIR}/fwlib)
+set(FWLIB_DIR ${PROJECT_SOURCE_DIR}/third_party/fwlib)
 
 # Import Fwlib32 as an imported static library
 add_library(fwlib32 STATIC IMPORTED)

@@ -40,7 +40,7 @@ jobs:
         run: |
           mkdir deploy
           Copy-Item build\src\imgui_ui\cnc_win32ui.exe deploy\
-          Copy-Item fwlib\Fwlib32.dll deploy\
+          Copy-Item third_party\fwlib\Fwlib32.dll deploy\
         shell: pwsh
 
       - name: Get version

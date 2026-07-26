@@ -49,7 +49,7 @@ cnc_collect.exe
 | `collect.c` | Batch data collector entry point |
 | `cnc_ops.h/c` | All CNC machine operations (FOCAS2 API calls) |
 | `file_io.h/c` | Config file read / result file write |
-| `fwlib/` | FANUC FOCAS2 library (header, DLL, import lib) |
+| `third_party/fwlib/` | FANUC FOCAS2 library (header, DLL, import lib) |
 | `jichuang.txt` | Machine list for batch collector |
 | `build.bat` | MSVC build script |
 
