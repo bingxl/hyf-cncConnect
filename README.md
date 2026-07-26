@@ -58,6 +58,10 @@ cnc_collect.exe
 - **Fwlib32.dll** — FANUC FOCAS2 library (32-bit). Must be in the same directory as the executable or on `PATH`.
 - **fwlib32.h** / **Fwlib32.lib** — from the [FOCAS2 SDK](https://github.com/strangesast/fwlib).
 
+## AI Development
+
+This project was developed with the assistance of [opencode](https://opencode.ai), an AI-powered coding assistant. AI was used for architecture design, code generation, refactoring, streaming data patterns, and ImGui UI development.
+
 ## License
 
 MIT

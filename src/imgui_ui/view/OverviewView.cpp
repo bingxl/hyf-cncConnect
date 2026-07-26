@@ -1,35 +1,30 @@
 #include "imgui.h"
 #include "OverviewView.hpp"
 
-void overview_view_draw(OverviewVm& vm, int& selected_machine_id, UiPage& page) {
+void OverviewPage::draw(AppState& state) {
     ImGui::Text("机床总览");
     ImGui::Separator();
     ImGui::Spacing();
 
     if (ImGui::Button("刷新数据", ImVec2(120, 0))) {
-        if (!vm.data.is_loading()) {
-            vm.refresh();
+        if (!vm_.data.is_loading()) {
+            vm_.refresh();
         }
     }
     ImGui::Spacing();
 
-    if (vm.data.is_loading()) {
-        ImGui::Text("正在获取各机床数据...");
+    if (vm_.data.is_loading()) {
+        ImGui::Text("正在获取数据... (%d/%d)", vm_.data.count(), vm_.data.total());
+    }
+
+    if (vm_.data.count() == 0) {
+        if (!vm_.data.is_loading())
+            ImGui::TextDisabled("请点击\"刷新数据\"按钮获取各机床当前加工数量");
         return;
     }
 
-    if (!vm.data.is_loaded()) {
-        ImGui::TextDisabled("请点击\"刷新数据\"按钮获取各机床当前加工数量");
-        return;
-    }
-
-    auto guard = vm.data.lock();
-    auto& items = vm.data.data();
-
-    if (items.empty()) {
-        ImGui::TextDisabled("暂无机床数据，请先在\"机床管理\"中添加机床");
-        return;
-    }
+    auto guard = vm_.data.lock();
+    auto& items = vm_.data.items();
 
     if (ImGui::BeginTable("##overview", 5,
             ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
@@ -52,8 +47,7 @@ void overview_view_draw(OverviewVm& vm, int& selected_machine_id, UiPage& page) 
             bool row_clicked = ImGui::Selectable(selectable_label, false,
                 ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap);
             if (row_clicked) {
-                selected_machine_id = item.machine_id;
-                page = UiPage::MachineDetail;
+                state.select_machine(item.machine_id, item.name);
             }
 
             ImGui::TableSetColumnIndex(1);

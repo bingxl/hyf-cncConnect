@@ -274,3 +274,121 @@ int db_get_batch_history(DbHandle db, int batch_id, HistoryRecord *list, int max
     sqlite3_finalize(stmt);
     return n;
 }
+
+int db_get_schema_version(DbHandle db)
+{
+    struct DbHandle *h = cast_handle(db);
+    sqlite3_stmt *stmt;
+    int rc, version = 0;
+    if (!h) return 0;
+    rc = sqlite3_prepare_v2(h->db,
+        "CREATE TABLE IF NOT EXISTS _meta (key TEXT PRIMARY KEY, value INTEGER)", -1, &stmt, NULL);
+    if (rc == SQLITE_OK) { sqlite3_step(stmt); sqlite3_finalize(stmt); }
+    rc = sqlite3_prepare_v2(h->db,
+        "SELECT value FROM _meta WHERE key='schema_version'", -1, &stmt, NULL);
+    if (rc == SQLITE_OK && sqlite3_step(stmt) == SQLITE_ROW)
+        version = sqlite3_column_int(stmt, 0);
+    sqlite3_finalize(stmt);
+    return version;
+}
+
+int db_set_schema_version(DbHandle db, int version)
+{
+    struct DbHandle *h = cast_handle(db);
+    sqlite3_stmt *stmt;
+    int rc;
+    if (!h) return -1;
+    rc = sqlite3_prepare_v2(h->db,
+        "INSERT OR REPLACE INTO _meta (key, value) VALUES ('schema_version', ?)",
+        -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return -1;
+    sqlite3_bind_int(stmt, 1, version);
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return (rc == SQLITE_DONE) ? 0 : -1;
+}
+
+int db_delete_batch(DbHandle db, int batch_id)
+{
+    struct DbHandle *h = cast_handle(db);
+    sqlite3_stmt *stmt;
+    int rc;
+    if (!h) return -1;
+    rc = sqlite3_prepare_v2(h->db,
+        "DELETE FROM history WHERE batch_id=?", -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return -1;
+    sqlite3_bind_int(stmt, 1, batch_id);
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return (rc == SQLITE_DONE) ? 0 : -1;
+}
+
+int db_delete_history_entry(DbHandle db, int id)
+{
+    struct DbHandle *h = cast_handle(db);
+    sqlite3_stmt *stmt;
+    int rc;
+    if (!h) return -1;
+    rc = sqlite3_prepare_v2(h->db,
+        "DELETE FROM history WHERE id=?", -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return -1;
+    sqlite3_bind_int(stmt, 1, id);
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return (rc == SQLITE_DONE) ? 0 : -1;
+}
+
+int db_update_history_entry(DbHandle db, int id, long required, long current, long total)
+{
+    struct DbHandle *h = cast_handle(db);
+    sqlite3_stmt *stmt;
+    int rc;
+    if (!h) return -1;
+    rc = sqlite3_prepare_v2(h->db,
+        "UPDATE history SET required=?, current=?, total=? WHERE id=?",
+        -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return -1;
+    sqlite3_bind_int(stmt, 1, (int)required);
+    sqlite3_bind_int(stmt, 2, (int)current);
+    sqlite3_bind_int(stmt, 3, (int)total);
+    sqlite3_bind_int(stmt, 4, id);
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return (rc == SQLITE_DONE) ? 0 : -1;
+}
+
+int db_get_batch_count(DbHandle db)
+{
+    struct DbHandle *h = cast_handle(db);
+    sqlite3_stmt *stmt;
+    int rc, count = 0;
+    if (!h) return 0;
+    rc = sqlite3_prepare_v2(h->db,
+        "SELECT COUNT(DISTINCT batch_id) FROM history", -1, &stmt, NULL);
+    if (rc == SQLITE_OK && sqlite3_step(stmt) == SQLITE_ROW)
+        count = sqlite3_column_int(stmt, 0);
+    sqlite3_finalize(stmt);
+    return count;
+}
+
+int db_get_batches_paged(DbHandle db, int offset, int limit, BatchInfo *list)
+{
+    struct DbHandle *h = cast_handle(db);
+    sqlite3_stmt *stmt;
+    int rc, n = 0;
+    if (!h || !list || limit <= 0) return 0;
+    rc = sqlite3_prepare_v2(h->db,
+        "SELECT DISTINCT batch_id, save_time FROM history "
+        "ORDER BY batch_id DESC LIMIT ? OFFSET ?",
+        -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return 0;
+    sqlite3_bind_int(stmt, 1, limit);
+    sqlite3_bind_int(stmt, 2, offset);
+    while (n < limit && sqlite3_step(stmt) == SQLITE_ROW) {
+        list[n].batch_id = sqlite3_column_int(stmt, 0);
+        strncpy(list[n].save_time, (const char *)sqlite3_column_text(stmt, 1), DB_MAX_TIME - 1);
+        n++;
+    }
+    sqlite3_finalize(stmt);
+    return n;
+}

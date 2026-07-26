@@ -2,46 +2,43 @@
 #include "imgui.h"
 #include "MachineDetailView.hpp"
 
-static bool needs_fetch(MachineDetailVm& vm, int machine_id) {
-    if (machine_id <= 0) return false;
-    if (vm.current_name.empty() && !vm.data.is_loading()) return true;
-    if (!vm.data.is_loaded() && !vm.data.is_loading()) return true;
-    return false;
-}
+void MachineDetailPage::draw(AppState& state) {
+    int machine_id = state.selected_machine_id;
 
-void machine_detail_view_draw(MachineDetailVm& vm, int machine_id) {
     if (machine_id <= 0) {
         ImGui::TextDisabled("请选择一台机床");
         return;
     }
 
-    if (needs_fetch(vm, machine_id)) {
-        vm.fetch(machine_id);
+    if (vm_.current_name.empty() && !vm_.data.is_loading() && !vm_.data.is_loaded()) {
+        vm_.fetch(machine_id);
+    }
+    if (!vm_.data.is_loaded() && !vm_.data.is_loading() && !vm_.current_name.empty()) {
+        vm_.fetch(machine_id);
     }
 
-    if (!vm.current_name.empty()) {
-        ImGui::Text("%s - 机床详情", vm.current_name.c_str());
+    if (!vm_.current_name.empty()) {
+        ImGui::Text("%s - 机床详情", vm_.current_name.c_str());
     }
     ImGui::Separator();
     ImGui::Spacing();
 
-    if (vm.data.is_loading()) {
+    if (vm_.data.is_loading()) {
         ImGui::Text("正在获取数据...");
         return;
     }
 
-    if (!vm.data.is_loaded()) return;
+    if (!vm_.data.is_loaded()) return;
 
-    auto guard = vm.data.lock();
-    auto& d = vm.data.data();
+    auto guard = vm_.data.lock();
+    auto& d = vm_.data.data();
 
     if (!d.ok) {
         ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f),
             "连接失败: %s", d.error_msg.c_str());
         if (ImGui::Button("重新连接")) {
-            guard.~lock_guard();
-            vm.data.reset();
-            vm.fetch(machine_id);
+            vm_.data.reset();
+            vm_.fetch(machine_id);
         }
         return;
     }
@@ -142,8 +139,7 @@ void machine_detail_view_draw(MachineDetailVm& vm, int machine_id) {
 
     ImGui::Spacing();
     if (ImGui::Button("刷新数据")) {
-        guard.~lock_guard();
-        vm.data.reset();
-        vm.fetch(machine_id);
+        vm_.data.reset();
+        vm_.fetch(machine_id);
     }
 }

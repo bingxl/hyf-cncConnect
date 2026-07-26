@@ -95,6 +95,7 @@ public:
         result.reserve(count);
         for (int i = 0; i < count; i++) {
             HistoryEntry e;
+            e.id = records[i].id;
             e.machine_id = records[i].machine_id;
             e.required = records[i].required;
             e.current = records[i].current;
@@ -105,8 +106,50 @@ public:
         return result;
     }
 
+    bool delete_batch(int batch_id) {
+        std::lock_guard lock(mtx_);
+        return ::db_delete_batch(db_, batch_id) == 0;
+    }
+
+    bool delete_history_entry(int id) {
+        std::lock_guard lock(mtx_);
+        return ::db_delete_history_entry(db_, id) == 0;
+    }
+
+    bool update_history_entry(int id, long required, long current, long total) {
+        std::lock_guard lock(mtx_);
+        return ::db_update_history_entry(db_, id, required, current, total) == 0;
+    }
+
+    int batch_count() {
+        std::lock_guard lock(mtx_);
+        return ::db_get_batch_count(db_);
+    }
+
+    std::vector<BatchInfoCpp> get_batches_paged(int page, int page_size = 10) {
+        std::lock_guard lock(mtx_);
+        int offset = page * page_size;
+        BatchInfo records[10];
+        int count = ::db_get_batches_paged(db_, offset, page_size, records);
+        std::vector<BatchInfoCpp> result;
+        result.reserve(count);
+        for (int i = 0; i < count; i++)
+            result.push_back({records[i].batch_id, records[i].save_time});
+        return result;
+    }
+
     Database(const Database&) = delete;
     Database& operator=(const Database&) = delete;
+
+    int schema_version() {
+        std::lock_guard lock(mtx_);
+        return ::db_get_schema_version(db_);
+    }
+
+    void set_schema_version(int v) {
+        std::lock_guard lock(mtx_);
+        ::db_set_schema_version(db_, v);
+    }
 
 private:
     Database() = default;

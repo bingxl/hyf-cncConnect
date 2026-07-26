@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <d3d9.h>
+#include <memory>
 
 #include "imgui.h"
 #include "imgui_impl_win32.h"
@@ -8,7 +9,12 @@
 #include "App.hpp"
 #include "ui_style.h"
 #include "view/MainView.hpp"
-#include "core/CncData.hpp"
+#include "core/AppState.hpp"
+#include "core/PageRegistry.hpp"
+#include "view/OverviewView.hpp"
+#include "view/MachineMgrView.hpp"
+#include "view/MachineDetailView.hpp"
+#include "view/HistoryView.hpp"
 
 #pragma comment(lib, "d3d9.lib")
 
@@ -90,6 +96,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
         return 1;
     }
 
+    PageRegistry::instance().add(std::make_unique<OverviewPage>());
+    PageRegistry::instance().add(std::make_unique<MachineMgrPage>());
+    PageRegistry::instance().add(std::make_unique<MachineDetailPage>());
+    PageRegistry::instance().add(std::make_unique<HistorySavePage>());
+    PageRegistry::instance().add(std::make_unique<HistoryBrowsePage>());
+    PageRegistry::instance().add(std::make_unique<HistoryCalcPage>());
+
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(wc);
     wc.style = CS_HREDRAW | CS_VREDRAW;
@@ -126,8 +139,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
     ImGui_ImplDX9_Init(g_pd3dDevice);
 
     MainView main_view;
-    UiPage current_page = UiPage::Overview;
-    int selected_machine_id = 0;
+    AppState app_state;
 
     bool running = true;
     MSG msg;
@@ -143,7 +155,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
 
-        main_view.draw(current_page, selected_machine_id);
+        main_view.draw(app_state);
 
         ImGui::Render();
         g_pd3dDevice->SetRenderState(D3DRS_ZENABLE, FALSE);

@@ -1,4 +1,13 @@
 #pragma once
+#include "core/IPage.hpp"
 #include "viewmodel/MachineDetailVm.hpp"
 
-void machine_detail_view_draw(MachineDetailVm& vm, int machine_id);
+class MachineDetailPage : public IPage {
+public:
+    UiPage id() const override { return UiPage::MachineDetail; }
+    const char* label() const override { return "查看详情"; }
+    void draw(AppState& state) override;
+
+private:
+    MachineDetailVm vm_;
+};

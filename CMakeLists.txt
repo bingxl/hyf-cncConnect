@@ -16,6 +16,13 @@ if(MSVC)
     add_compile_options(/W3 /O2 /utf-8)
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS ONO8D)
     set(CMAKE_RC_FLAGS "/utf-8")
+
+    # Force MSVC archiver/linker to avoid MSYS2 ar.exe on PATH
+    get_filename_component(MSVC_BIN_DIR ${CMAKE_C_COMPILER} DIRECTORY)
+    set(CMAKE_AR   "${MSVC_BIN_DIR}/lib.exe" CACHE FILEPATH "" FORCE)
+    set(CMAKE_LINKER "${MSVC_BIN_DIR}/link.exe" CACHE FILEPATH "" FORCE)
+    set(CMAKE_MT   "${MSVC_BIN_DIR}/mt.exe" CACHE FILEPATH "" FORCE)
+    set(CMAKE_RC_COMPILER "${MSVC_BIN_DIR}/rc.exe" CACHE FILEPATH "" FORCE)
 endif()
 
 # ---- FANUC fwlib ----

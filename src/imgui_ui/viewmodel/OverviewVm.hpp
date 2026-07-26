@@ -1,9 +1,8 @@
 #pragma once
-#include <vector>
-#include "core/AsyncData.hpp"
+#include "core/StreamingData.hpp"
 
 class OverviewVm {
 public:
-    AsyncData<std::vector<OverviewItem>> data;
+    StreamingData<OverviewItem> data;
     void refresh();
 };

@@ -52,6 +52,15 @@ int db_get_latest_batch_id(DbHandle db);
 int db_get_batch_list(DbHandle db, BatchInfo *list, int max_count);
 int db_get_batch_history(DbHandle db, int batch_id, HistoryRecord *list, int max_count);
 
+int db_get_schema_version(DbHandle db);
+int db_set_schema_version(DbHandle db, int version);
+
+int db_delete_batch(DbHandle db, int batch_id);
+int db_delete_history_entry(DbHandle db, int id);
+int db_update_history_entry(DbHandle db, int id, long required, long current, long total);
+int db_get_batch_count(DbHandle db);
+int db_get_batches_paged(DbHandle db, int offset, int limit, BatchInfo *list);
+
 #ifdef __cplusplus
 }
 #endif

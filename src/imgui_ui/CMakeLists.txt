@@ -22,6 +22,10 @@ add_executable(cnc_win32ui WIN32
     core/CncConnection.hpp
     core/Database.hpp
     core/AsyncData.hpp
+    core/StreamingData.hpp
+    core/AppState.hpp
+    core/IPage.hpp
+    core/PageRegistry.hpp
 
     # ViewModels
     viewmodel/OverviewVm.cpp

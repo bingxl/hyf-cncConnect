@@ -1,5 +1,13 @@
 #pragma once
-#include "core/CncData.hpp"
+#include "core/IPage.hpp"
 #include "viewmodel/OverviewVm.hpp"
 
-void overview_view_draw(OverviewVm& vm, int& selected_machine_id, UiPage& page);
+class OverviewPage : public IPage {
+public:
+    UiPage id() const override { return UiPage::Overview; }
+    const char* label() const override { return "机床总览"; }
+    void draw(AppState& state) override;
+
+private:
+    OverviewVm vm_;
+};

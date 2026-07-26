@@ -54,6 +54,7 @@ struct OverviewItem {
 };
 
 struct HistoryEntry {
+    int id = 0;
     int machine_id = 0;
     std::string name;
     long required = 0;
@@ -75,13 +76,4 @@ struct CalcItem {
 struct BatchInfoCpp {
     int batch_id = 0;
     std::string save_time;
-};
-
-enum class UiPage {
-    Overview,
-    MachineMgr,
-    MachineDetail,
-    HistoryView,
-    HistorySave,
-    HistoryCalc
 };
