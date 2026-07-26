@@ -11,6 +11,8 @@ A C-based CNC monitoring tool that communicates with FANUC CNC controllers via t
 | `main.c` | Interactive CNC monitor entry point |
 | `collect.c` | Batch CNC data collector entry point |
 | `cnc_ops.h/c` | All CNC machine operations (connect, read data, monitor) |
+| `db_ops.h/c` | SQLite database operations (machines, history, batches) |
+| `third_party/sqlite3/sqlite3.h/c` | SQLite 3.52.0 amalgamation |
 | `file_io.h/c` | Config file read (`jichuang.txt`) + result file write (`result.txt`) |
 | `fwlib/fwlib32.h` | FANUC FOCAS2 library header (16k+ lines) |
 | `fwlib/Fwlib32.dll` | Runtime DLL (required at runtime) |

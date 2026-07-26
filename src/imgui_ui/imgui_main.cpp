@@ -1,14 +1,14 @@
 #include <windows.h>
 #include <d3d9.h>
-#include <cstdio>
 
 #include "imgui.h"
 #include "imgui_impl_win32.h"
 #include "imgui_impl_dx9.h"
 
-#include "app.h"
+#include "App.hpp"
 #include "ui_style.h"
-#include "ui_main_window.h"
+#include "view/MainView.hpp"
+#include "core/CncData.hpp"
 
 #pragma comment(lib, "d3d9.lib")
 
@@ -85,7 +85,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
 {
     (void)hInstance;
 
-    if (app_init() != 0) {
+    if (!App::init()) {
         MessageBox(NULL, L"应用初始化失败", L"错误", MB_OK | MB_ICONERROR);
         return 1;
     }
@@ -125,6 +125,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
     ImGui_ImplWin32_Init(hWnd);
     ImGui_ImplDX9_Init(g_pd3dDevice);
 
+    MainView main_view;
     UiPage current_page = UiPage::Overview;
     int selected_machine_id = 0;
 
@@ -142,7 +143,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
 
-        ui_main_window_draw(current_page, selected_machine_id);
+        main_view.draw(current_page, selected_machine_id);
 
         ImGui::Render();
         g_pd3dDevice->SetRenderState(D3DRS_ZENABLE, FALSE);
@@ -165,6 +166,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
     DestroyWindow(hWnd);
     UnregisterClassW(wc.lpszClassName, wc.hInstance);
 
-    app_cleanup();
+    App::cleanup();
     return 0;
 }

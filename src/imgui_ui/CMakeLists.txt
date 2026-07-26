@@ -12,25 +12,37 @@ add_executable(cnc_win32ui WIN32
     ${IMGUI_DIR}/backends/imgui_impl_win32.cpp
     ${IMGUI_DIR}/backends/imgui_impl_dx9.cpp
 
-    # Application
+    # Entry point
     imgui_main.cpp
-    app.cpp
-    app.h
+    App.cpp
     ui_style.cpp
-    ui_style.h
-    ui_main_window.cpp
-    ui_main_window.h
-    ui_machine_mgr.cpp
-    ui_machine_mgr.h
-    ui_machine_detail.cpp
-    ui_machine_detail.h
-    ui_history.cpp
-    ui_history.h
+
+    # Core (Model layer)
+    core/CncData.hpp
+    core/CncConnection.hpp
+    core/Database.hpp
+    core/AsyncData.hpp
+
+    # ViewModels
+    viewmodel/OverviewVm.cpp
+    viewmodel/MachineMgrVm.cpp
+    viewmodel/MachineDetailVm.cpp
+    viewmodel/HistoryVm.cpp
+
+    # Views
+    view/MainView.cpp
+    view/OverviewView.cpp
+    view/MachineMgrView.cpp
+    view/MachineDetailView.cpp
+    view/HistoryView.cpp
 )
 
 target_include_directories(cnc_win32ui
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/core
+        ${CMAKE_CURRENT_SOURCE_DIR}/viewmodel
+        ${CMAKE_CURRENT_SOURCE_DIR}/view
         ${IMGUI_DIR}
         ${IMGUI_DIR}/backends
 )

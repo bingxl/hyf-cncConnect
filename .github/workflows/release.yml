@@ -17,6 +17,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
+          fetch-depth: 0
 
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
@@ -51,10 +52,85 @@ jobs:
         run: Compress-Archive -Path deploy\* -DestinationPath cnc-win32ui-${{ steps.version.outputs.tag }}.zip
         shell: pwsh
 
+      - name: Generate release notes
+        id: notes
+        shell: bash
+        run: |
+          # Get previous tag
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+
+          if [ -z "$PREV_TAG" ]; then
+            RANGE="HEAD"
+            RANGE_DESC="全部提交"
+          else
+            RANGE="${PREV_TAG}..HEAD"
+            RANGE_DESC="${PREV_TAG} → ${{ steps.version.outputs.tag }}"
+          fi
+
+          echo "## CNC 机床监控系统 ${{ steps.version.outputs.tag }}" > release_notes.md
+          echo "" >> release_notes.md
+          echo "### 变更摘要 (${RANGE_DESC})" >> release_notes.md
+          echo "" >> release_notes.md
+
+          # Collect commits by prefix
+          FEATS=$(git log "$RANGE" --pretty=format:"- %s (%h)" --no-merges --grep="^feat" 2>/dev/null || true)
+          FIXES=$(git log "$RANGE" --pretty=format:"- %s (%h)" --no-merges --grep="^fix" 2>/dev/null || true)
+          REFACTOR=$(git log "$RANGE" --pretty=format:"- %s (%h)" --no-merges --grep="^refactor" 2>/dev/null || true)
+          OTHER=$(git log "$RANGE" --pretty=format:"- %s (%h)" --no-merges --invert-grep --grep="^feat" --grep="^fix" --grep="^refactor" 2>/dev/null || true)
+
+          if [ -n "$FEATS" ]; then
+            echo "### 新功能" >> release_notes.md
+            echo "" >> release_notes.md
+            echo "$FEATS" >> release_notes.md
+            echo "" >> release_notes.md
+          fi
+
+          if [ -n "$FIXES" ]; then
+            echo "### 修复" >> release_notes.md
+            echo "" >> release_notes.md
+            echo "$FIXES" >> release_notes.md
+            echo "" >> release_notes.md
+          fi
+
+          if [ -n "$REFACTOR" ]; then
+            echo "### 重构" >> release_notes.md
+            echo "" >> release_notes.md
+            echo "$REFACTOR" >> release_notes.md
+            echo "" >> release_notes.md
+          fi
+
+          if [ -n "$OTHER" ]; then
+            echo "### 其他变更" >> release_notes.md
+            echo "" >> release_notes.md
+            echo "$OTHER" >> release_notes.md
+            echo "" >> release_notes.md
+          fi
+
+          # If no categorized commits found, show all
+          if [ -z "$FEATS" ] && [ -z "$FIXES" ] && [ -z "$REFACTOR" ] && [ -z "$OTHER" ]; then
+            git log "$RANGE" --pretty=format:"- %s (%h)" --no-merges >> release_notes.md 2>/dev/null || echo "- 初始版本" >> release_notes.md
+            echo "" >> release_notes.md
+          fi
+
+          echo "### 下载" >> release_notes.md
+          echo "" >> release_notes.md
+          echo "| 文件 | 说明 |" >> release_notes.md
+          echo "|------|------|" >> release_notes.md
+          echo "| \`cnc-win32ui-${{ steps.version.outputs.tag }}.zip\` | Win32 GUI 程序 + Fwlib32.dll |" >> release_notes.md
+          echo "" >> release_notes.md
+          echo "**运行要求**: Windows x86, 将 \`Fwlib32.dll\` 放在同目录下" >> release_notes.md
+
+          # Escape multiline for GitHub Actions output
+          {
+            echo "body<<RELEASE_EOF"
+            cat release_notes.md
+            echo "RELEASE_EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           files: cnc-win32ui-${{ steps.version.outputs.tag }}.zip
-          generate_release_notes: true
+          body: ${{ steps.notes.outputs.body }}
           draft: false
           prerelease: false
