@@ -22,7 +22,9 @@ if(MSVC)
     set(CMAKE_AR   "${MSVC_BIN_DIR}/lib.exe" CACHE FILEPATH "" FORCE)
     set(CMAKE_LINKER "${MSVC_BIN_DIR}/link.exe" CACHE FILEPATH "" FORCE)
     set(CMAKE_MT   "${MSVC_BIN_DIR}/mt.exe" CACHE FILEPATH "" FORCE)
-    set(CMAKE_RC_COMPILER "${MSVC_BIN_DIR}/rc.exe" CACHE FILEPATH "" FORCE)
+    if(NOT CMAKE_RC_COMPILER STREQUAL "${MSVC_BIN_DIR}/rc.exe")
+        set(CMAKE_RC_COMPILER "${MSVC_BIN_DIR}/rc.exe" CACHE FILEPATH "")
+    endif()
 endif()
 
 # ---- FANUC fwlib ----
