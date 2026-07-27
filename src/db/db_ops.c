@@ -264,6 +264,7 @@ int db_get_batch_history(DbHandle db, int batch_id, HistoryRecord *list, int max
     while (n < max_count && sqlite3_step(stmt) == SQLITE_ROW) {
         list[n].id = sqlite3_column_int(stmt, 0);
         list[n].machine_id = sqlite3_column_int(stmt, 1);
+        strncpy(list[n].name, (const char *)sqlite3_column_text(stmt, 2), DB_MAX_NAME - 1);
         strncpy(list[n].save_time, (const char *)sqlite3_column_text(stmt, 3), DB_MAX_TIME - 1);
         list[n].required = sqlite3_column_int(stmt, 4);
         list[n].current = sqlite3_column_int(stmt, 5);

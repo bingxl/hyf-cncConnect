@@ -16,6 +16,7 @@ typedef struct {
 typedef struct {
     int id;
     int machine_id;
+    char name[DB_MAX_NAME];
     char save_time[DB_MAX_TIME];
     long required;
     long current;

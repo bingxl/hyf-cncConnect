@@ -78,8 +78,8 @@ public:
 
     std::vector<BatchInfoCpp> get_batches(int max_count = 4) {
         std::lock_guard lock(mtx_);
-        BatchInfo records[4];
-        int count = ::db_get_batch_list(db_, records, max_count);
+        std::vector<BatchInfo> records(max_count);
+        int count = ::db_get_batch_list(db_, records.data(), max_count);
         std::vector<BatchInfoCpp> result;
         result.reserve(count);
         for (int i = 0; i < count; i++)
@@ -97,6 +97,7 @@ public:
             HistoryEntry e;
             e.id = records[i].id;
             e.machine_id = records[i].machine_id;
+            e.name = records[i].name;
             e.required = records[i].required;
             e.current = records[i].current;
             e.total = records[i].total;

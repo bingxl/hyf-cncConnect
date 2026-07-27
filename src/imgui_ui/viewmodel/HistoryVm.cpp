@@ -112,14 +112,14 @@ void HistoryVm::compute_diff() {
     auto machines = Database::instance().get_machines();
     auto hist = Database::instance().get_batch_history(batch_id);
 
-    streaming_fetch(machines, calc_stream, [&hist](const MachineInfo& m) {
+    streaming_fetch(machines, calc_stream, [hist = std::move(hist)](const MachineInfo& m) {
         CalcItem item;
         item.name = m.name;
-        long base_val = -1;
+        item.base = -1;
 
         for (auto& h : hist) {
             if (h.machine_id == m.id) {
-                base_val = h.total;
+                item.base = h.total;
                 break;
             }
         }
@@ -130,14 +130,14 @@ void HistoryVm::compute_diff() {
             item.ok = result->ok;
         }
 
-        if (base_val >= 0 && item.current >= 0) {
-            item.diff = item.current - base_val;
+        if (item.base >= 0 && item.current >= 0) {
+            item.diff = item.current - item.base;
             if (item.diff < 0) item.status = "异常: 减少";
             else if (item.diff == 0) item.status = "未变化";
             else item.status = "正常";
         } else if (item.current < 0) {
             item.diff = 0;
-            item.status = "异常: 离线";
+            item.status = item.base >= 0 ? "异常: 离线" : "异常: 无基准";
         } else {
             item.diff = 0;
             item.status = "异常: 无基准";
