@@ -2,19 +2,10 @@
 #include "core/IPage.hpp"
 #include "viewmodel/HistoryVm.hpp"
 
-class HistorySavePage : public IPage {
-public:
-    UiPage id() const override { return UiPage::HistorySave; }
-    const char* label() const override { return "保存批次"; }
-    void draw(AppState& state) override;
-private:
-    HistoryVm vm_;
-};
-
 class HistoryBrowsePage : public IPage {
 public:
     UiPage id() const override { return UiPage::HistoryBrowse; }
-    const char* label() const override { return "批次浏览"; }
+    const char* label() const override { return "批次管理"; }
     void draw(AppState& state) override;
 private:
     HistoryVm vm_;
@@ -35,6 +26,7 @@ private:
         bool is_batch = false;
     } del_;
 
+    void draw_save_panel();
     void draw_batch_list();
     void draw_batch_detail();
     void draw_edit_popup();
