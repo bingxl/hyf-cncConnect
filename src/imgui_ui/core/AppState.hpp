@@ -5,6 +5,7 @@ enum class UiPage {
     Overview,
     MachineMgr,
     MachineDetail,
+    HistorySave,
     HistoryBrowse,
     HistoryCalc
 };

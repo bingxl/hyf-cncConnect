@@ -11,13 +11,6 @@ void HistoryVm::start_save() {
     show_result = false;
 
     auto machines = Database::instance().get_machines();
-    if (machines.empty()) {
-        saved_batch_id = -1;
-        saved_count = 0;
-        show_result = true;
-        saving = false;
-        return;
-    }
     streaming_fetch(machines, save_stream, [this](const MachineInfo& m) {
         HistoryEntry entry;
         entry.machine_id = m.id;

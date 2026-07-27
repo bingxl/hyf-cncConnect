@@ -55,10 +55,6 @@ void streaming_fetch(
     Func&& per_machine_fn)
 {
     target.start(static_cast<int>(machines.size()));
-    if (machines.empty()) {
-        target.finish();
-        return;
-    }
     std::thread([machines, &target, fn = std::forward<Func>(per_machine_fn)]() mutable {
         std::vector<std::jthread> threads;
         threads.reserve(machines.size());
