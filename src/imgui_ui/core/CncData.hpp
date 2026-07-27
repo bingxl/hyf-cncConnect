@@ -26,6 +26,14 @@ struct MachineData {
     CncProgramInfo prog{};
     CncDynamicData dyn{};
     PartCount part_count{};
+    CncProgramList prog_list{};
+    CncMacroData macro_vars{};
+    CncToolOffsetData tool_offsets{};
+    CncWorkZeroData work_zero{};
+    long param_6750 = 0;
+    long setting_0 = 0;
+    short path_current = 0;
+    short path_count = 0;
 
     static MachineData from_c(const CncMachineData& c) {
         MachineData d;
@@ -39,6 +47,14 @@ struct MachineData {
         d.prog = c.prog;
         d.dyn = c.dyn;
         d.part_count = c.part_count;
+        d.prog_list = c.prog_list;
+        d.macro_vars = c.macro_vars;
+        d.tool_offsets = c.tool_offsets;
+        d.work_zero = c.work_zero;
+        d.param_6750 = c.param_6750;
+        d.setting_0 = c.setting_0;
+        d.path_current = c.path_current;
+        d.path_count = c.path_count;
         return d;
     }
 };

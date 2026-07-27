@@ -13,7 +13,9 @@ A C-based CNC monitoring tool that communicates with FANUC CNC controllers via t
 | `cnc_ops.h/c` | All CNC machine operations (connect, read data, monitor) |
 | `db_ops.h/c` | SQLite database operations (machines, history, batches) |
 | `third_party/sqlite3/sqlite3.h/c` | SQLite 3.52.0 amalgamation |
+| `mazak_ops.h/c` | Mazak machine operations (MTConnect, FTP, SNMP, raw TCP) |
 | `file_io.h/c` | Config file read (`jichuang.txt`) + result file write (`result.txt`) |
+| `mazak_test.c` | CLI tool for testing Mazak machine connectivity and data access |
 | `third_party/fwlib/fwlib32.h` | FANUC FOCAS2 library header (16k+ lines) |
 | `third_party/fwlib/Fwlib32.dll` | Runtime DLL (required at runtime) |
 | `third_party/fwlib/Fwlib32.lib` | Import lib for MSVC linking |
@@ -45,6 +47,21 @@ Examples:
 
 Batch collector (reads machines from `jichuang.txt`):
   cnc_collect.exe
+
+Mazak machine test tool:
+  cnc_mazak_test.exe <IP> [port] [options]
+
+Options:
+  -mtconnect        MTConnect protocol test (default, port 7878)
+  -raw              Raw TCP protocol test (port 50100)
+  -scan             Scan common ports
+  -all              Run all tests
+  -timeout <ms>     Connection timeout (default: 5000ms)
+
+Examples:
+  cnc_mazak_test.exe 192.168.1.100
+  cnc_mazak_test.exe 192.168.1.100 -all
+  cnc_mazak_test.exe 192.168.1.100 -scan
 ```
 
 ## Architecture
@@ -68,7 +85,8 @@ Modularized C project with three layers:
   - **Part Count** (`read_counts` / `get_part_count` / `get_part_count_on_path`): Reads macro variables #3901/#3902 and param #6712.
   - **Monitor Loop** (`monitor_loop`): Continuous polling of status, positions, and part count.
 - **`file_io.h/c`** — File I/O: parses `jichuang.txt` (machine list) and writes `result.txt` (collected data).
-- **`main.c`** / **`collect.c`** — Entry points using the above libraries.
+- **`mazak_ops.h/c`** — Mazak machine operations via MTConnect, raw TCP, FTP, SNMP, OPC UA.
+- **`main.c`** / **`collect.c`** / **`mazak_test.c`** — Entry points using the above libraries.
 
 ## Dependencies
 
@@ -123,4 +141,4 @@ All FOCAS2 API calls return a `short` status code. The `focas_error()` function 
 - Compiler: MSVC (`cl.exe`) via Visual Studio Build Tools
 - Architecture: x86 (32-bit) - required by `Fwlib32.lib`
 - Link: `Fwlib32.lib` and `advapi32.lib`
-- Output: `cnc_monitor.exe` and `cnc_collect.exe`
+- Output: `cnc_monitor.exe`, `cnc_collect.exe`, and `cnc_mazak_test.exe`

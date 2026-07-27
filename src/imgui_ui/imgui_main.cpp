@@ -1,6 +1,8 @@
 #include <windows.h>
 #include <d3d9.h>
 #include <memory>
+#include <dbghelp.h>
+#include <cstdio>
 
 #include "imgui.h"
 #include "imgui_impl_win32.h"
@@ -17,6 +19,41 @@
 #include "view/HistoryView.hpp"
 
 #pragma comment(lib, "d3d9.lib")
+#pragma comment(lib, "dbghelp.lib")
+
+static LONG WINAPI crash_handler(EXCEPTION_POINTERS *ep)
+{
+    wchar_t exe_path[MAX_PATH];
+    GetModuleFileNameW(NULL, exe_path, MAX_PATH);
+    wchar_t dump_path[MAX_PATH];
+    wcscpy_s(dump_path, exe_path);
+    wcscpy_s(dump_path + wcslen(dump_path) - wcslen(L".exe"), 5, L"_crash.dmp");
+
+    HANDLE h = CreateFileW(dump_path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h != INVALID_HANDLE_VALUE) {
+        MINIDUMP_EXCEPTION_INFORMATION mei = {};
+        mei.ThreadId = GetCurrentThreadId();
+        mei.ExceptionPointers = ep;
+        mei.ClientPointers = FALSE;
+        MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), h,
+                          MiniDumpNormal, &mei, NULL, NULL);
+        CloseHandle(h);
+    }
+
+    wchar_t msg[512];
+    swprintf_s(msg,
+        L"程序发生未处理的异常，即将退出。\n\n"
+        L"异常代码: 0x%08X\n"
+        L"异常地址: 0x%p\n\n"
+        L"转储文件已保存至:\n%s\n\n"
+        L"请将转储文件发送给开发者分析。",
+        ep->ExceptionRecord->ExceptionCode,
+        ep->ExceptionRecord->ExceptionAddress,
+        dump_path);
+    MessageBoxW(NULL, msg, L"CNC 监控系统 - 崩溃", MB_OK | MB_ICONERROR);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
 
 static LPDIRECT3D9       g_pD3D = NULL;
 static LPDIRECT3DDEVICE9 g_pd3dDevice = NULL;
@@ -90,6 +127,7 @@ static LRESULT WINAPI wnd_proc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
 {
     (void)hInstance;
+    SetUnhandledExceptionFilter(crash_handler);
 
     if (!App::init()) {
         MessageBox(NULL, L"应用初始化失败", L"错误", MB_OK | MB_ICONERROR);

@@ -276,8 +276,9 @@ int print_dynamic(unsigned short handle)
 int print_program_list(unsigned short handle)
 {
     PRGDIR2 dir[100];
-    short ret, count, i;
+    short ret, i;
     long top = 0;
+    short count = 100;
 
     print_line("Program File List");
 
@@ -604,6 +605,7 @@ int fetch_positions(unsigned short handle, CncPositions *pos)
             pos->distance[i] = raw.data[i] / 10000.0;
     }
 
+    if (pos->count > CNC_MAX_AXES) pos->count = CNC_MAX_AXES;
     return 0;
 }
 
@@ -687,11 +689,13 @@ int fetch_dynamic(unsigned short handle, CncDynamicData *dyn)
 int fetch_program_list(unsigned short handle, CncProgramList *list)
 {
     PRGDIR2 dir[CNC_MAX_PROGRAMS];
-    short ret, count, i;
+    short ret, i;
     long top = 0;
+    short count = CNC_MAX_PROGRAMS;
     memset(list, 0, sizeof(*list));
     ret = cnc_rdprogdir2(handle, 2, &top, &count, dir);
     if (ret != EW_OK) return -1;
+    if (count > CNC_MAX_PROGRAMS) count = CNC_MAX_PROGRAMS;
     list->count = count;
     for (i = 0; i < count && i < CNC_MAX_PROGRAMS; i++) {
         list->number[i] = dir[i].number;
@@ -700,6 +704,75 @@ int fetch_program_list(unsigned short handle, CncProgramList *list)
         list->comment[i][35] = 0;
     }
     return 0;
+}
+
+int fetch_macro_vars(unsigned short handle, CncMacroData *data)
+{
+    ODBM macro;
+    short ret;
+    int i;
+    memset(data, 0, sizeof(*data));
+    for (i = 1; i <= CNC_MAX_MACRO; i++) {
+        memset(&macro, 0, sizeof(macro));
+        ret = cnc_rdmacro(handle, (short)i, sizeof(macro), &macro);
+        if (ret != EW_OK) continue;
+        data->values[data->count++] = macro.mcr_val / 10000.0;
+    }
+    return data->count;
+}
+
+int fetch_tool_offsets(unsigned short handle, CncToolOffsetData *data)
+{
+    ODBTOFS ofs;
+    short ret;
+    int i;
+    memset(data, 0, sizeof(*data));
+    for (i = 0; i < CNC_MAX_TOOL; i++) {
+        memset(&ofs, 0, sizeof(ofs));
+        ret = cnc_rdtofs(handle, (short)i, 0, sizeof(ofs), &ofs);
+        if (ret != EW_OK) continue;
+        data->values[data->count++] = ofs.data / 10000.0;
+    }
+    return data->count;
+}
+
+int fetch_work_zero(unsigned short handle, CncWorkZeroData *data)
+{
+    IODBZOFS zofs;
+    short ret;
+    int i;
+    memset(data, 0, sizeof(*data));
+    memset(&zofs, 0, sizeof(zofs));
+    ret = cnc_rdzofs(handle, 0, ALL_AXES, sizeof(zofs), &zofs);
+    if (ret != EW_OK) return -1;
+    data->count = zofs.type;
+    if (data->count > CNC_MAX_AXES) data->count = CNC_MAX_AXES;
+    for (i = 0; i < data->count; i++)
+        data->values[i] = zofs.data[i] / 10000.0;
+    return data->count;
+}
+
+int fetch_parameters(unsigned short handle, long *param_6750, long *setting_0)
+{
+    IODBPSD param;
+    short ret;
+    *param_6750 = 0;
+    *setting_0 = 0;
+    memset(&param, 0, sizeof(param));
+    ret = cnc_rdparam(handle, 6750, 0, sizeof(param), &param);
+    if (ret == EW_OK) *param_6750 = param.u.ldata;
+    memset(&param, 0, sizeof(param));
+    ret = cnc_rdset(handle, 0, 0, sizeof(param), &param);
+    if (ret == EW_OK) *setting_0 = param.u.ldata;
+    return 0;
+}
+
+int fetch_path_info(unsigned short handle, short *current, short *count)
+{
+    short data_cnt;
+    int ret = cnc_getpath(handle, current, &data_cnt);
+    if (ret == EW_OK) *count = data_cnt;
+    return ret;
 }
 
 int fetch_machine_data(const char *ip, int port, CncMachineData *data)
@@ -724,8 +797,15 @@ int fetch_machine_data(const char *ip, int port, CncMachineData *data)
     fetch_program_info(handle, &data->prog);
     fetch_dynamic(handle, &data->dyn);
     get_part_count(handle, &data->part_count);
+    fetch_program_list(handle, &data->prog_list);
+    fetch_macro_vars(handle, &data->macro_vars);
+    fetch_tool_offsets(handle, &data->tool_offsets);
+    fetch_work_zero(handle, &data->work_zero);
+    fetch_parameters(handle, &data->param_6750, &data->setting_0);
+    fetch_path_info(handle, &data->path_current, &data->path_count);
 
     cnc_disconnect(handle);
     data->ok = 1;
+    if (data->alarms.count < 0) data->alarms.count = 0;
     return 0;
 }

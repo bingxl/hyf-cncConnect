@@ -13,9 +13,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # MSVC-specific flags
 if(MSVC)
-    add_compile_options(/W3 /O2 /utf-8)
+    add_compile_options(/W3 /utf-8)
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS ONO8D)
     set(CMAKE_RC_FLAGS "/utf-8")
+    foreach(t EXE SHARED MODULE)
+        set(CMAKE_${t}_LINKER_FLAGS_DEBUG "${CMAKE_${t}_LINKER_FLAGS_DEBUG} /MANIFEST:NO /INCREMENTAL:NO")
+    endforeach()
 
     # Force MSVC archiver/linker to avoid MSYS2 ar.exe on PATH
     get_filename_component(MSVC_BIN_DIR ${CMAKE_C_COMPILER} DIRECTORY)

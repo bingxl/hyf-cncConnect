@@ -88,6 +88,22 @@ typedef struct {
 } CncMacroVar[CNC_MAX_MACRO];
 
 typedef struct {
+    double values[CNC_MAX_MACRO];
+    int count;
+} CncMacroData;
+
+#define CNC_MAX_TOOL 10
+typedef struct {
+    double values[CNC_MAX_TOOL];
+    int count;
+} CncToolOffsetData;
+
+typedef struct {
+    double values[CNC_MAX_AXES];
+    int count;
+} CncWorkZeroData;
+
+typedef struct {
     int ok;
     CncSystemInfo sys;
     CncStatus status;
@@ -97,6 +113,14 @@ typedef struct {
     CncProgramInfo prog;
     CncDynamicData dyn;
     PartCount part_count;
+    CncProgramList prog_list;
+    CncMacroData macro_vars;
+    CncToolOffsetData tool_offsets;
+    CncWorkZeroData work_zero;
+    long param_6750;
+    long setting_0;
+    short path_current;
+    short path_count;
     char error_msg[128];
 } CncMachineData;
 
@@ -135,6 +159,11 @@ int fetch_act_data(unsigned short handle, CncActData *act);
 int fetch_program_info(unsigned short handle, CncProgramInfo *prog);
 int fetch_dynamic(unsigned short handle, CncDynamicData *dyn);
 int fetch_program_list(unsigned short handle, CncProgramList *list);
+int fetch_macro_vars(unsigned short handle, CncMacroData *data);
+int fetch_tool_offsets(unsigned short handle, CncToolOffsetData *data);
+int fetch_work_zero(unsigned short handle, CncWorkZeroData *data);
+int fetch_parameters(unsigned short handle, long *param_6750, long *setting_0);
+int fetch_path_info(unsigned short handle, short *current, short *count);
 int fetch_machine_data(const char *ip, int port, CncMachineData *data);
 
 #ifdef __cplusplus
