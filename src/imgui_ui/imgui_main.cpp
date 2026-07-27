@@ -99,6 +99,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
     PageRegistry::instance().add(std::make_unique<OverviewPage>());
     PageRegistry::instance().add(std::make_unique<MachineMgrPage>());
     PageRegistry::instance().add(std::make_unique<MachineDetailPage>());
+    PageRegistry::instance().add(std::make_unique<HistorySavePage>());
     PageRegistry::instance().add(std::make_unique<HistoryBrowsePage>());
     PageRegistry::instance().add(std::make_unique<HistoryCalcPage>());
 

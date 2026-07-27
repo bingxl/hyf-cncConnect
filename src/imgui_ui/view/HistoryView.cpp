@@ -3,18 +3,18 @@
 #include "HistoryView.hpp"
 
 // ============================================================
-// HistoryBrowsePage
+// HistorySavePage
 // ============================================================
 
-void HistoryBrowsePage::draw_save_panel() {
-    ImGui::Text("获取当前数据");
+void HistorySavePage::draw(AppState& state) {
+    ImGui::Text("保存批次");
     ImGui::Separator();
-    ImGui::TextWrapped("从所有机床获取当前加工数量，可保存为新批次。");
+    ImGui::TextWrapped("从所有机床获取当前数据并保存为一个批次。");
     ImGui::Spacing();
 
     bool can_save = !vm_.saving.load();
     if (!can_save) ImGui::BeginDisabled();
-    if (ImGui::Button("获取数据", ImVec2(120, 0))) {
+    if (ImGui::Button("获取并保存", ImVec2(160, 0))) {
         vm_.start_save();
     }
     if (!can_save) ImGui::EndDisabled();
@@ -22,19 +22,19 @@ void HistoryBrowsePage::draw_save_panel() {
     ImGui::Spacing();
 
     if (vm_.saving.load()) {
-        ImGui::Text("正在获取... (%d/%d)", vm_.save_stream.count(), vm_.save_stream.total());
-        ImGui::Spacing();
+        ImGui::Text("正在获取数据... (%d/%d)", vm_.save_stream.count(), vm_.save_stream.total());
 
         if (vm_.save_stream.count() > 0) {
             auto guard = vm_.save_stream.lock();
             auto& items = vm_.save_stream.items();
 
-            if (ImGui::BeginTable("##save_preview", 3,
+            if (ImGui::BeginTable("##save_preview", 4,
                     ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                     ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingStretchProp)) {
-                ImGui::TableSetupColumn("机床名称", ImGuiTableColumnFlags_WidthFixed, 130);
-                ImGui::TableSetupColumn("当前数量", ImGuiTableColumnFlags_WidthFixed, 80);
-                ImGui::TableSetupColumn("累计数量", ImGuiTableColumnFlags_WidthFixed, 80);
+                ImGui::TableSetupColumn("机床名称", ImGuiTableColumnFlags_WidthFixed, 140);
+                ImGui::TableSetupColumn("当前数量", ImGuiTableColumnFlags_WidthFixed, 90);
+                ImGui::TableSetupColumn("要求数量", ImGuiTableColumnFlags_WidthFixed, 90);
+                ImGui::TableSetupColumn("累计数量", ImGuiTableColumnFlags_WidthFixed, 90);
                 ImGui::TableHeadersRow();
 
                 for (auto& item : items) {
@@ -44,6 +44,8 @@ void HistoryBrowsePage::draw_save_panel() {
                     ImGui::TableSetColumnIndex(1);
                     ImGui::Text("%ld", item.current);
                     ImGui::TableSetColumnIndex(2);
+                    ImGui::Text("%ld", item.required);
+                    ImGui::TableSetColumnIndex(3);
                     ImGui::Text("%ld", item.total);
                 }
                 ImGui::EndTable();
@@ -57,13 +59,15 @@ void HistoryBrowsePage::draw_save_panel() {
         } else if (vm_.saved_batch_id > 0) {
             ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.4f, 1.0f), "保存成功!");
             ImGui::Text("批次号: %d  |  机床数量: %d", vm_.saved_batch_id, vm_.saved_count);
-            vm_.load_batch_list();
         } else {
             ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "保存失败");
         }
-        vm_.show_result = false;
     }
 }
+
+// ============================================================
+// HistoryBrowsePage
+// ============================================================
 
 void HistoryBrowsePage::draw_batch_list() {
     if (vm_.batch_list.empty() && vm_.total_batches == 0)
@@ -252,7 +256,7 @@ void HistoryBrowsePage::draw_delete_confirm() {
 }
 
 void HistoryBrowsePage::draw(AppState& state) {
-    ImGui::Text("批次管理");
+    ImGui::Text("批次浏览");
     ImGui::Separator();
     ImGui::Spacing();
 
@@ -265,11 +269,7 @@ void HistoryBrowsePage::draw(AppState& state) {
 
     ImGui::SameLine();
 
-    ImGui::BeginChild("##right_panel", ImVec2(0, 0), true);
-    draw_save_panel();
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
+    ImGui::BeginChild("##batch_detail", ImVec2(0, 0), true);
     draw_batch_detail();
     ImGui::EndChild();
 
@@ -289,7 +289,7 @@ void HistoryCalcPage::draw(AppState& state) {
     vm_.load_calc_batches();
 
     if (vm_.calc_batches.empty()) {
-        ImGui::TextDisabled("没有历史数据，请先在\"批次管理\"中保存数据");
+        ImGui::TextDisabled("没有历史数据，请先在\"保存批次\"中保存数据");
         return;
     }
 
