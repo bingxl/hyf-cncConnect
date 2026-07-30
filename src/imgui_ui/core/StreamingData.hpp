@@ -12,17 +12,17 @@ public:
     void start(int total) {
         {
             std::lock_guard lock(mtx_);
-            items_.clear();
+            items_.assign(total, T{});
         }
         total_ = total;
         remaining_ = total;
         loading_ = true;
     }
 
-    void push(T item) {
+    void push(int index, T item) {
         {
             std::lock_guard lock(mtx_);
-            items_.push_back(std::move(item));
+            items_[index] = std::move(item);
         }
         if (remaining_.fetch_sub(1) <= 1)
             loading_ = false;
@@ -65,7 +65,7 @@ void streaming_fetch(
         for (size_t i = 0; i < machines.size(); ++i) {
             threads.emplace_back([&machines, &target, &fn, i]() {
                 T result = fn(machines[i]);
-                target.push(std::move(result));
+                target.push(static_cast<int>(i), std::move(result));
             });
         }
     }).detach();
