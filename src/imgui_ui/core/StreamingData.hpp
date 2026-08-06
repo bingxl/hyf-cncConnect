@@ -22,6 +22,8 @@ public:
     void push(int index, T item) {
         {
             std::lock_guard lock(mtx_);
+            if (index < 0 || index >= static_cast<int>(items_.size()))
+                return;
             items_[index] = std::move(item);
         }
         if (remaining_.fetch_sub(1) <= 1)
@@ -67,16 +69,17 @@ void streaming_fetch_update(
     std::vector<T> initial,
     Func&& per_machine_fn)
 {
-    {
-        std::lock_guard lock(target.lock());
-        for (size_t i = 0; i < machines.size(); ++i) {
-            target.items()[i] = initial[i];
-        }
-    }
     target.start(static_cast<int>(machines.size()));
     if (machines.empty()) {
         target.finish();
         return;
+    }
+    {
+        std::lock_guard lock(target.lock());
+        for (size_t i = 0; i < machines.size(); ++i) {
+            if (i < initial.size())
+                target.items()[i] = initial[i];
+        }
     }
     std::thread([machines, &target, fn = std::forward<Func>(per_machine_fn)]() mutable {
         std::vector<std::jthread> threads;

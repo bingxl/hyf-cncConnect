@@ -1,40 +1,27 @@
 {
-    "version": 6,
+    "version": 8,
     "configurePresets": [
         {
-            "name": "default",
-            "displayName": "Debug (x86)",
-            "generator": "Ninja",
-            "binaryDir": "${sourceDir}/build/${presetName}",
+            "name": "Visual Studio Community 2026 Release - x86",
+            "displayName": "Visual Studio Community 2026 Release - x86",
+            "description": "将编译器用于 Visual Studio 18 2026 (x86 体系结构)",
+            "generator": "Visual Studio 18 2026",
+            "toolset": "host=x86",
+            "architecture": "win32",
+            "binaryDir": "${sourceDir}/out/build/${presetName}",
             "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/${presetName}",
                 "CMAKE_C_COMPILER": "cl.exe",
-                "CMAKE_CXX_COMPILER": "cl.exe",
-                "CMAKE_LINKER": "link.exe"
-            }
-        },
-        {
-            "name": "debug",
-            "displayName": "Debug (x86)",
-            "inherits": "default"
-        },
-        {
-            "name": "release",
-            "displayName": "Release (x86)",
-            "inherits": "default",
-            "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Release"
+                "CMAKE_CXX_COMPILER": "cl.exe"
             }
         }
     ],
     "buildPresets": [
         {
-            "name": "debug",
-            "configurePreset": "debug"
-        },
-        {
-            "name": "release",
-            "configurePreset": "release"
+            "name": "Visual Studio Community 2026 Release - x86-debug",
+            "displayName": "Visual Studio Community 2026 Release - x86 - Debug",
+            "configurePreset": "Visual Studio Community 2026 Release - x86",
+            "configuration": "Debug"
         }
     ]
 }

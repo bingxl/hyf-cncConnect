@@ -1,5 +1,6 @@
 #include <thread>
 #include <algorithm>
+#include <unordered_map>
 #include "HistoryVm.hpp"
 #include "core/Database.hpp"
 #include "core/CncConnection.hpp"
@@ -122,18 +123,40 @@ void HistoryVm::delete_batch(int batch_id) {
 
 void HistoryVm::load_calc_batches() {
     calc_batches = Database::instance().get_batches(20);
-    if (!calc_batches.empty() && selected_calc_batch < 0)
-        selected_calc_batch = 0;
+    if (calc_batches.empty()) {
+        selected_calc_start = -1;
+        selected_calc_end = -1;
+        return;
+    }
+    if (selected_calc_start < 0 || selected_calc_start >= static_cast<int>(calc_batches.size()))
+        selected_calc_start = 0;
+    if (selected_calc_end < 0 || selected_calc_end >= static_cast<int>(calc_batches.size()))
+        selected_calc_end = static_cast<int>(calc_batches.size()) - 1;
 }
 
 void HistoryVm::compute_diff() {
-    if (selected_calc_batch < 0 || selected_calc_batch >= static_cast<int>(calc_batches.size()))
+    if (selected_calc_start < 0 || selected_calc_start >= static_cast<int>(calc_batches.size()))
+        return;
+    if (!calc_end_is_live &&
+        (selected_calc_end < 0 || selected_calc_end >= static_cast<int>(calc_batches.size())))
         return;
 
-    int batch_id = calc_batches[selected_calc_batch].batch_id;
+    int start_id = calc_batches[selected_calc_start].batch_id;
     auto machines = Database::instance().get_machines();
-    auto hist = Database::instance().get_batch_history(batch_id);
+    auto start_hist = Database::instance().get_batch_history(start_id);
     sort_by_name(machines);
+
+    std::unordered_map<int, long> start_map;
+    for (const auto& h : start_hist)
+        start_map[h.machine_id] = h.total;
+
+    std::unordered_map<int, long> end_map;
+    if (!calc_end_is_live) {
+        int end_id = calc_batches[selected_calc_end].batch_id;
+        auto end_hist = Database::instance().get_batch_history(end_id);
+        for (const auto& h : end_hist)
+            end_map[h.machine_id] = h.total;
+    }
 
     std::vector<CalcItem> placeholders;
     placeholders.reserve(machines.size());
@@ -145,22 +168,26 @@ void HistoryVm::compute_diff() {
     }
 
     streaming_fetch_update(machines, calc_stream, std::move(placeholders),
-        [hist = std::move(hist)](const MachineInfo& m) {
+        [use_live_end = calc_end_is_live, start_map = std::move(start_map),
+         end_map = std::move(end_map)](const MachineInfo& m) {
         CalcItem item;
         item.name = m.name;
         item.base = -1;
 
-        for (auto& h : hist) {
-            if (h.machine_id == m.id) {
-                item.base = h.total;
-                break;
-            }
-        }
+        auto sit = start_map.find(m.id);
+        if (sit != start_map.end())
+            item.base = sit->second;
 
-        auto result = CncConnection::fetch(m.ip, m.port);
-        if (result) {
-            item.current = result->part_count.total;
-            item.ok = result->ok;
+        if (use_live_end) {
+            auto result = CncConnection::fetch(m.ip, m.port);
+            if (result) {
+                item.current = result->part_count.total;
+                item.ok = result->ok;
+            }
+        } else {
+            auto eit = end_map.find(m.id);
+            if (eit != end_map.end())
+                item.current = eit->second;
         }
 
         if (item.base >= 0 && item.current >= 0) {
@@ -168,12 +195,12 @@ void HistoryVm::compute_diff() {
             if (item.diff < 0) item.status = "异常: 减少";
             else if (item.diff == 0) item.status = "未变化";
             else item.status = "正常";
-        } else if (item.current < 0) {
+        } else if (item.base < 0) {
             item.diff = 0;
-            item.status = item.base >= 0 ? "异常: 离线" : "异常: 无基准";
+            item.status = "异常: 无起始数据";
         } else {
             item.diff = 0;
-            item.status = "异常: 无基准";
+            item.status = use_live_end ? "异常: 离线" : "异常: 无结束数据";
         }
         item.loading = false;
         return item;
