@@ -9,6 +9,7 @@ void MachineDetailVm::fetch(int machine_id) {
         return;
     }
     current_name = machine->name;
+    current_machine_id = machine_id;
     std::string ip = machine->ip;
     int port = machine->port;
     data.start([ip = std::move(ip), port]() {
