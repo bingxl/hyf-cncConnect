@@ -22,7 +22,7 @@ void HistorySavePage::draw(AppState& state) {
     ImGui::Spacing();
 
     if (vm_.saving.load()) {
-        ImGui::Text("正在获取数据... (%d/%d)", vm_.save_stream.count(), vm_.save_stream.total());
+        ImGui::Text("正在获取数据... (%d/%d)", vm_.save_stream.completed(), vm_.save_stream.total());
 
         if (vm_.save_stream.count() > 0) {
             auto guard = vm_.save_stream.lock();
@@ -42,11 +42,20 @@ void HistorySavePage::draw(AppState& state) {
                     ImGui::TableSetColumnIndex(0);
                     ImGui::TextUnformatted(item.name.c_str());
                     ImGui::TableSetColumnIndex(1);
-                    ImGui::Text("%ld", item.current);
+                    if (!item.loading)
+                        ImGui::Text("%ld", item.current);
+                    else
+                        ImGui::TextDisabled("--");
                     ImGui::TableSetColumnIndex(2);
-                    ImGui::Text("%ld", item.required);
+                    if (!item.loading)
+                        ImGui::Text("%ld", item.required);
+                    else
+                        ImGui::TextDisabled("--");
                     ImGui::TableSetColumnIndex(3);
-                    ImGui::Text("%ld", item.total);
+                    if (!item.loading)
+                        ImGui::Text("%ld", item.total);
+                    else
+                        ImGui::TextDisabled("--");
                 }
                 ImGui::EndTable();
             }
@@ -326,7 +335,7 @@ void HistoryCalcPage::draw(AppState& state) {
     ImGui::Spacing();
 
     if (vm_.calc_stream.is_loading()) {
-        ImGui::Text("正在计算... (%d/%d)", vm_.calc_stream.count(), vm_.calc_stream.total());
+        ImGui::Text("正在计算... (%d/%d)", vm_.calc_stream.completed(), vm_.calc_stream.total());
     }
 
     if (vm_.calc_stream.count() > 0) {
@@ -349,21 +358,34 @@ void HistoryCalcPage::draw(AppState& state) {
                 ImGui::TableSetColumnIndex(0);
                 ImGui::TextUnformatted(item.name.c_str());
                 ImGui::TableSetColumnIndex(1);
-                ImGui::Text("%ld", item.current);
+                if (!item.loading)
+                    ImGui::Text("%ld", item.current);
+                else
+                    ImGui::TextDisabled("--");
                 ImGui::TableSetColumnIndex(2);
-                ImGui::Text("%ld", item.base);
+                if (!item.loading)
+                    ImGui::Text("%ld", item.base);
+                else
+                    ImGui::TextDisabled("--");
                 ImGui::TableSetColumnIndex(3);
-                ImGui::Text("%+ld", item.diff);
+                if (!item.loading)
+                    ImGui::Text("%+ld", item.diff);
+                else
+                    ImGui::TextDisabled("--");
                 ImGui::TableSetColumnIndex(4);
 
-                ImVec4 clr(0.9f, 0.9f, 0.9f, 1.0f);
-                if (item.status.find("异常") != std::string::npos)
-                    clr = ImVec4(1.0f, 0.4f, 0.3f, 1.0f);
-                else if (item.status == "正常")
-                    clr = ImVec4(0.2f, 0.8f, 0.4f, 1.0f);
-                else
-                    clr = ImVec4(0.8f, 0.8f, 0.8f, 1.0f);
-                ImGui::TextColored(clr, "%s", item.status.c_str());
+                if (item.loading) {
+                    ImGui::TextColored(ImVec4(0.55f, 0.55f, 0.55f, 1.0f), "获取中");
+                } else {
+                    ImVec4 clr(0.9f, 0.9f, 0.9f, 1.0f);
+                    if (item.status.find("异常") != std::string::npos)
+                        clr = ImVec4(1.0f, 0.4f, 0.3f, 1.0f);
+                    else if (item.status == "正常")
+                        clr = ImVec4(0.2f, 0.8f, 0.4f, 1.0f);
+                    else
+                        clr = ImVec4(0.8f, 0.8f, 0.8f, 1.0f);
+                    ImGui::TextColored(clr, "%s", item.status.c_str());
+                }
             }
             ImGui::EndTable();
         }

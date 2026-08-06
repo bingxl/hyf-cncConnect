@@ -19,10 +19,32 @@ public:
         loading_ = true;
     }
 
+    void start_with(const std::vector<T>& initial) {
+        {
+            std::lock_guard lock(mtx_);
+            items_ = initial;
+        }
+        int n = static_cast<int>(initial.size());
+        total_ = n;
+        remaining_ = n;
+        loading_ = true;
+    }
+
     void push(T item) {
         {
             std::lock_guard lock(mtx_);
             items_.push_back(std::move(item));
+        }
+        if (remaining_.fetch_sub(1) <= 1)
+            loading_ = false;
+    }
+
+    void update(int index, T item) {
+        {
+            std::lock_guard lock(mtx_);
+            if (index < 0 || index >= static_cast<int>(items_.size()))
+                return;
+            items_[index] = std::move(item);
         }
         if (remaining_.fetch_sub(1) <= 1)
             loading_ = false;
@@ -36,6 +58,7 @@ public:
     bool is_loading() const { return loading_.load(); }
     int count() const { return static_cast<int>(items_.size()); }
     int total() const { return total_.load(); }
+    int completed() const { return total_.load() - remaining_.load(); }
 
     std::lock_guard<std::mutex> lock() { return std::lock_guard(mtx_); }
     std::vector<T>& items() { return items_; }
@@ -49,12 +72,13 @@ private:
 };
 
 template<typename T, typename Func>
-void streaming_fetch(
+void streaming_fetch_update(
     const std::vector<MachineInfo>& machines,
     StreamingData<T>& target,
+    std::vector<T> initial,
     Func&& per_machine_fn)
 {
-    target.start(static_cast<int>(machines.size()));
+    target.start_with(initial);
     if (machines.empty()) {
         target.finish();
         return;
@@ -65,7 +89,7 @@ void streaming_fetch(
         for (size_t i = 0; i < machines.size(); ++i) {
             threads.emplace_back([&machines, &target, &fn, i]() {
                 T result = fn(machines[i]);
-                target.push(std::move(result));
+                target.update(static_cast<int>(i), std::move(result));
             });
         }
     }).detach();

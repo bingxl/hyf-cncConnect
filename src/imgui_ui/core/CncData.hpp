@@ -67,6 +67,7 @@ struct OverviewItem {
     long total = 0;
     bool ok = false;
     bool alarm = false;
+    bool loading = false;
 };
 
 struct HistoryEntry {
@@ -78,6 +79,7 @@ struct HistoryEntry {
     long total = 0;
     bool ok = false;
     bool alarm = false;
+    bool loading = false;
 };
 
 struct CalcItem {
@@ -86,6 +88,7 @@ struct CalcItem {
     long base = -1;
     long diff = 0;
     bool ok = false;
+    bool loading = false;
     std::string status;
 };
 

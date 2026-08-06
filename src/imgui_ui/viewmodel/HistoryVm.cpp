@@ -1,7 +1,15 @@
 #include <thread>
+#include <algorithm>
 #include "HistoryVm.hpp"
 #include "core/Database.hpp"
 #include "core/CncConnection.hpp"
+
+static void sort_by_name(std::vector<MachineInfo>& machines) {
+    std::sort(machines.begin(), machines.end(),
+              [](const MachineInfo& a, const MachineInfo& b) {
+                  return a.name < b.name;
+              });
+}
 
 // --- Save page ---
 
@@ -18,19 +26,33 @@ void HistoryVm::start_save() {
         saving = false;
         return;
     }
-    streaming_fetch(machines, save_stream, [this](const MachineInfo& m) {
-        HistoryEntry entry;
-        entry.machine_id = m.id;
-        entry.name = m.name;
-        auto result = CncConnection::fetch(m.ip, m.port);
-        if (result) {
-            entry.required = result->part_count.required;
-            entry.current = result->part_count.current;
-            entry.total = result->part_count.total;
-            entry.ok = true;
-        }
-        return entry;
-    });
+    sort_by_name(machines);
+
+    std::vector<HistoryEntry> placeholders;
+    placeholders.reserve(machines.size());
+    for (const auto& m : machines) {
+        HistoryEntry e;
+        e.machine_id = m.id;
+        e.name = m.name;
+        e.loading = true;
+        placeholders.push_back(std::move(e));
+    }
+
+    streaming_fetch_update(machines, save_stream, std::move(placeholders),
+        [this](const MachineInfo& m) {
+            HistoryEntry entry;
+            entry.machine_id = m.id;
+            entry.name = m.name;
+            auto result = CncConnection::fetch(m.ip, m.port);
+            if (result) {
+                entry.required = result->part_count.required;
+                entry.current = result->part_count.current;
+                entry.total = result->part_count.total;
+                entry.ok = true;
+            }
+            entry.loading = false;
+            return entry;
+        });
 
     std::thread([this]() {
         while (save_stream.is_loading())
@@ -111,8 +133,19 @@ void HistoryVm::compute_diff() {
     int batch_id = calc_batches[selected_calc_batch].batch_id;
     auto machines = Database::instance().get_machines();
     auto hist = Database::instance().get_batch_history(batch_id);
+    sort_by_name(machines);
 
-    streaming_fetch(machines, calc_stream, [hist = std::move(hist)](const MachineInfo& m) {
+    std::vector<CalcItem> placeholders;
+    placeholders.reserve(machines.size());
+    for (const auto& m : machines) {
+        CalcItem item;
+        item.name = m.name;
+        item.loading = true;
+        placeholders.push_back(std::move(item));
+    }
+
+    streaming_fetch_update(machines, calc_stream, std::move(placeholders),
+        [hist = std::move(hist)](const MachineInfo& m) {
         CalcItem item;
         item.name = m.name;
         item.base = -1;
@@ -142,6 +175,7 @@ void HistoryVm::compute_diff() {
             item.diff = 0;
             item.status = "异常: 无基准";
         }
+        item.loading = false;
         return item;
     });
 }
