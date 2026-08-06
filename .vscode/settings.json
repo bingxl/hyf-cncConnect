@@ -1,5 +1,5 @@
 {
-    "cmake.generator": "Ninja",
+    "cmake.useCMakePresets": "auto",
     "cmake.buildType": "Release",
     "cmake.configureOnOpen": true
 }
