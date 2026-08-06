@@ -59,6 +59,46 @@ static const char* motion_name(int motion)
 void MachineDetailPage::draw(AppState& state)
 {
     int machine_id = state.selected_machine_id;
+
+    /* ---- Machine selector + refresh toolbar ---- */
+    {
+        auto machines = Database::instance().get_machines();
+
+        std::string current_label;
+        const char *preview = "请选择机床";
+        for (auto& m : machines) {
+            if (m.id == machine_id) {
+                current_label = m.name + "  (" + m.ip + ":" + std::to_string(m.port) + ")";
+                preview = current_label.c_str();
+                break;
+            }
+        }
+
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 90);
+        if (ImGui::BeginCombo("##machine_sel", preview)) {
+            for (auto& m : machines) {
+                bool selected = (m.id == machine_id);
+                std::string label = m.name + "  (" + m.ip + ":" + std::to_string(m.port) + ")";
+                if (ImGui::Selectable(label.c_str(), selected))
+                    state.select_machine(m.id, m.name);
+                if (selected)
+                    ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+
+        ImGui::SameLine();
+        ImGui::BeginDisabled(machine_id <= 0);
+        if (ImGui::Button("刷新", ImVec2(80, 0))) {
+            vm_.data.reset();
+            vm_.fetch(machine_id);
+        }
+        ImGui::EndDisabled();
+
+        ImGui::Separator();
+        ImGui::Spacing();
+    }
+
     if (machine_id <= 0) {
         ImGui::TextDisabled("请选择一台机床");
         return;
@@ -66,10 +106,11 @@ void MachineDetailPage::draw(AppState& state)
 
     auto machine = Database::instance().get_machine(machine_id);
 
-    if (vm_.current_name.empty() && !vm_.data.is_loading() && !vm_.data.is_loaded())
+    if (machine_id != vm_.current_machine_id && !vm_.data.is_loading()) {
+        vm_.current_machine_id = machine_id;
+        vm_.data.reset();
         vm_.fetch(machine_id);
-    if (!vm_.data.is_loaded() && !vm_.data.is_loading() && !vm_.current_name.empty())
-        vm_.fetch(machine_id);
+    }
 
     if (vm_.data.is_loading()) {
         float w = ImGui::GetContentRegionAvail().x;
@@ -446,10 +487,5 @@ void MachineDetailPage::draw(AppState& state)
             vm_.fetch(machine_id);
         }
         return;
-    }
-    ImGui::SetCursorPosX((w - 100) * 0.5f);
-    if (ImGui::Button("刷新数据", ImVec2(100, 0))) {
-        vm_.data.reset();
-        vm_.fetch(machine_id);
     }
 }

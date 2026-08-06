@@ -75,6 +75,17 @@ if errorlevel 1 (
 
 REM --- Configure ---
 if not exist "%BUILD_DIR%" mkdir "%BUILD_DIR%"
+
+REM --- Drop stale CMake cache from a different generator (e.g. VS "Open Folder") ---
+if exist "%BUILD_DIR%\CMakeCache.txt" (
+    findstr /C:"CMAKE_GENERATOR:INTERNAL=Ninja" "%BUILD_DIR%\CMakeCache.txt" >nul 2>&1
+    if errorlevel 1 (
+        echo [INFO] Stale CMake cache detected (non-Ninja), cleaning build cache ...
+        rmdir /s /q "%BUILD_DIR%\CMakeFiles" 2>nul
+        del /q "%BUILD_DIR%\CMakeCache.txt" 2>nul
+    )
+)
+
 echo [2/3] Configuring (Ninja, %CONFIG%) ...
 cmake -S . -B "%BUILD_DIR%" -G Ninja -DCMAKE_BUILD_TYPE=%CONFIG% -DCMAKE_C_COMPILER=cl.exe -DCMAKE_LINKER=link.exe
 if errorlevel 1 (
