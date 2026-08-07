@@ -14,7 +14,7 @@ void OverviewPage::draw(AppState& state) {
     ImGui::Spacing();
 
     if (vm_.data.is_loading()) {
-        ImGui::Text("正在获取数据... (%d/%d)", vm_.data.count(), vm_.data.total());
+        ImGui::Text("正在获取数据... (%d/%d)", vm_.data.completed(), vm_.data.total());
     }
 
     if (vm_.data.count() == 0) {
@@ -51,19 +51,27 @@ void OverviewPage::draw(AppState& state) {
             }
 
             ImGui::TableSetColumnIndex(1);
-            if (item.ok)
+            if (!item.loading && item.ok)
                 ImGui::Text("%ld", item.current);
             else
                 ImGui::TextDisabled("--");
 
             ImGui::TableSetColumnIndex(2);
-            ImGui::Text("%ld", item.required);
+            if (!item.loading)
+                ImGui::Text("%ld", item.required);
+            else
+                ImGui::TextDisabled("--");
 
             ImGui::TableSetColumnIndex(3);
-            ImGui::Text("%ld", item.total);
+            if (!item.loading)
+                ImGui::Text("%ld", item.total);
+            else
+                ImGui::TextDisabled("--");
 
             ImGui::TableSetColumnIndex(4);
-            if (!item.ok)
+            if (item.loading)
+                ImGui::TextColored(ImVec4(0.55f, 0.55f, 0.55f, 1.0f), "获取中");
+            else if (!item.ok)
                 ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "连接失败");
             else if (item.alarm)
                 ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "报警");

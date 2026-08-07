@@ -3,6 +3,7 @@
 *.o
 *.lib
 !third_party/fwlib/*
+third_party/fwlib/*.a
 result.txt
 .vsbuild_cache
 

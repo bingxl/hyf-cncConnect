@@ -22,7 +22,7 @@ void HistorySavePage::draw(AppState& state) {
     ImGui::Spacing();
 
     if (vm_.saving.load()) {
-        ImGui::Text("正在获取数据... (%d/%d)", vm_.save_stream.count(), vm_.save_stream.total());
+        ImGui::Text("正在获取数据... (%d/%d)", vm_.save_stream.completed(), vm_.save_stream.total());
 
         if (vm_.save_stream.count() > 0) {
             auto guard = vm_.save_stream.lock();
@@ -42,11 +42,20 @@ void HistorySavePage::draw(AppState& state) {
                     ImGui::TableSetColumnIndex(0);
                     ImGui::TextUnformatted(item.name.c_str());
                     ImGui::TableSetColumnIndex(1);
-                    ImGui::Text("%ld", item.current);
+                    if (!item.loading)
+                        ImGui::Text("%ld", item.current);
+                    else
+                        ImGui::TextDisabled("--");
                     ImGui::TableSetColumnIndex(2);
-                    ImGui::Text("%ld", item.required);
+                    if (!item.loading)
+                        ImGui::Text("%ld", item.required);
+                    else
+                        ImGui::TextDisabled("--");
                     ImGui::TableSetColumnIndex(3);
-                    ImGui::Text("%ld", item.total);
+                    if (!item.loading)
+                        ImGui::Text("%ld", item.total);
+                    else
+                        ImGui::TextDisabled("--");
                 }
                 ImGui::EndTable();
             }
@@ -293,17 +302,17 @@ void HistoryCalcPage::draw(AppState& state) {
         return;
     }
 
-    ImGui::Text("基准批次:");
+    ImGui::Text("起始批次:");
     ImGui::Spacing();
 
-    if (ImGui::BeginCombo("##batch",
-            vm_.selected_calc_batch >= 0
-                ? vm_.calc_batches[vm_.selected_calc_batch].save_time.c_str()
+    if (ImGui::BeginCombo("##start_batch",
+            vm_.selected_calc_start >= 0
+                ? vm_.calc_batches[vm_.selected_calc_start].save_time.c_str()
                 : "选择批次")) {
         for (int i = 0; i < (int)vm_.calc_batches.size(); i++) {
-            bool selected = (i == vm_.selected_calc_batch);
+            bool selected = (i == vm_.selected_calc_start);
             if (ImGui::Selectable(vm_.calc_batches[i].save_time.c_str(), selected)) {
-                vm_.selected_calc_batch = i;
+                vm_.selected_calc_start = i;
             }
             if (selected) ImGui::SetItemDefaultFocus();
         }
@@ -316,7 +325,7 @@ void HistoryCalcPage::draw(AppState& state) {
     }
 
     ImGui::SameLine();
-    bool can_calc = vm_.selected_calc_batch >= 0 && !vm_.calc_stream.is_loading();
+    bool can_calc = vm_.selected_calc_start >= 0 && !vm_.calc_stream.is_loading();
     if (!can_calc) ImGui::BeginDisabled();
     if (ImGui::Button("计算差值")) {
         vm_.compute_diff();
@@ -325,8 +334,36 @@ void HistoryCalcPage::draw(AppState& state) {
 
     ImGui::Spacing();
 
+    ImGui::Text("结束批次:");
+    ImGui::SameLine();
+    bool live = vm_.calc_end_is_live;
+    if (ImGui::RadioButton("实时数据(默认)", live))
+        vm_.calc_end_is_live = true;
+    ImGui::SameLine();
+    if (ImGui::RadioButton("历史批次", !live))
+        vm_.calc_end_is_live = false;
+
+    if (!live) {
+        ImGui::SameLine();
+        if (ImGui::BeginCombo("##end_batch",
+                vm_.selected_calc_end >= 0
+                    ? vm_.calc_batches[vm_.selected_calc_end].save_time.c_str()
+                    : "选择批次")) {
+            for (int i = 0; i < (int)vm_.calc_batches.size(); i++) {
+                bool selected = (i == vm_.selected_calc_end);
+                if (ImGui::Selectable(vm_.calc_batches[i].save_time.c_str(), selected)) {
+                    vm_.selected_calc_end = i;
+                }
+                if (selected) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+    }
+
+    ImGui::Spacing();
+
     if (vm_.calc_stream.is_loading()) {
-        ImGui::Text("正在计算... (%d/%d)", vm_.calc_stream.count(), vm_.calc_stream.total());
+        ImGui::Text("正在计算... (%d/%d)", vm_.calc_stream.completed(), vm_.calc_stream.total());
     }
 
     if (vm_.calc_stream.count() > 0) {
@@ -338,8 +375,8 @@ void HistoryCalcPage::draw(AppState& state) {
                 ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY |
                 ImGuiTableFlags_SizingStretchProp)) {
             ImGui::TableSetupColumn("机床名称", ImGuiTableColumnFlags_WidthFixed, 140);
-            ImGui::TableSetupColumn("当前数量", ImGuiTableColumnFlags_WidthFixed, 90);
-            ImGui::TableSetupColumn("基准数量", ImGuiTableColumnFlags_WidthFixed, 90);
+            ImGui::TableSetupColumn("结束数量", ImGuiTableColumnFlags_WidthFixed, 90);
+            ImGui::TableSetupColumn("起始数量", ImGuiTableColumnFlags_WidthFixed, 90);
             ImGui::TableSetupColumn("差值", ImGuiTableColumnFlags_WidthFixed, 80);
             ImGui::TableSetupColumn("状态", ImGuiTableColumnFlags_WidthFixed, 120);
             ImGui::TableHeadersRow();
@@ -349,25 +386,38 @@ void HistoryCalcPage::draw(AppState& state) {
                 ImGui::TableSetColumnIndex(0);
                 ImGui::TextUnformatted(item.name.c_str());
                 ImGui::TableSetColumnIndex(1);
-                ImGui::Text("%ld", item.current);
+                if (!item.loading)
+                    ImGui::Text("%ld", item.current);
+                else
+                    ImGui::TextDisabled("--");
                 ImGui::TableSetColumnIndex(2);
-                ImGui::Text("%ld", item.base);
+                if (!item.loading)
+                    ImGui::Text("%ld", item.base);
+                else
+                    ImGui::TextDisabled("--");
                 ImGui::TableSetColumnIndex(3);
-                ImGui::Text("%+ld", item.diff);
+                if (!item.loading)
+                    ImGui::Text("%+ld", item.diff);
+                else
+                    ImGui::TextDisabled("--");
                 ImGui::TableSetColumnIndex(4);
 
-                ImVec4 clr(0.9f, 0.9f, 0.9f, 1.0f);
-                if (item.status.find("异常") != std::string::npos)
-                    clr = ImVec4(1.0f, 0.4f, 0.3f, 1.0f);
-                else if (item.status == "正常")
-                    clr = ImVec4(0.2f, 0.8f, 0.4f, 1.0f);
-                else
-                    clr = ImVec4(0.8f, 0.8f, 0.8f, 1.0f);
-                ImGui::TextColored(clr, "%s", item.status.c_str());
+                if (item.loading) {
+                    ImGui::TextColored(ImVec4(0.55f, 0.55f, 0.55f, 1.0f), "获取中");
+                } else {
+                    ImVec4 clr(0.9f, 0.9f, 0.9f, 1.0f);
+                    if (item.status.find("异常") != std::string::npos)
+                        clr = ImVec4(1.0f, 0.4f, 0.3f, 1.0f);
+                    else if (item.status == "正常")
+                        clr = ImVec4(0.2f, 0.8f, 0.4f, 1.0f);
+                    else
+                        clr = ImVec4(0.8f, 0.8f, 0.8f, 1.0f);
+                    ImGui::TextColored(clr, "%s", item.status.c_str());
+                }
             }
             ImGui::EndTable();
         }
     } else if (!vm_.calc_stream.is_loading()) {
-        ImGui::TextDisabled("选择基准批次后点击\"计算差值\"");
+        ImGui::TextDisabled("选择起始批次和结束批次后点击\"计算差值\"");
     }
 }

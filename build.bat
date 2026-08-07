@@ -80,7 +80,7 @@ REM --- Drop stale CMake cache from a different generator (e.g. VS "Open Folder"
 if exist "%BUILD_DIR%\CMakeCache.txt" (
     findstr /C:"CMAKE_GENERATOR:INTERNAL=Ninja" "%BUILD_DIR%\CMakeCache.txt" >nul 2>&1
     if errorlevel 1 (
-        echo [INFO] Stale CMake cache detected (non-Ninja), cleaning build cache ...
+        echo [INFO] Stale CMake cache detected, cleaning build cache ...
         rmdir /s /q "%BUILD_DIR%\CMakeFiles" 2>nul
         del /q "%BUILD_DIR%\CMakeCache.txt" 2>nul
     )

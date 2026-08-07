@@ -1,0 +1,30 @@
+{
+    "version": 8,
+    "configurePresets": [
+        {
+            "name": "vs2026-x86",
+            "displayName": "Visual Studio 2026 - x86",
+            "description": "MSVC (cl.exe) via Visual Studio 18 2026, Win32 architecture (required by Fwlib32.lib)",
+            "generator": "Visual Studio 18 2026",
+            "architecture": "win32",
+            "binaryDir": "${sourceDir}/out/build/${presetName}",
+            "cacheVariables": {
+                "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/${presetName}"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "vs2026-x86-debug",
+            "displayName": "Visual Studio 2026 - x86 - Debug",
+            "configurePreset": "vs2026-x86",
+            "configuration": "Debug"
+        },
+        {
+            "name": "vs2026-x86-release",
+            "displayName": "Visual Studio 2026 - x86 - Release",
+            "configurePreset": "vs2026-x86",
+            "configuration": "Release"
+        }
+    ]
+}

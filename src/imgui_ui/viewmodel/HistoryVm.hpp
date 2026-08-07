@@ -34,7 +34,9 @@ public:
     // --- Calc page ---
     StreamingData<CalcItem> calc_stream;
     std::vector<BatchInfoCpp> calc_batches;
-    int selected_calc_batch = -1;
+    int selected_calc_start = -1;
+    int selected_calc_end = -1;
+    bool calc_end_is_live = true;
     void load_calc_batches();
     void compute_diff();
 };
