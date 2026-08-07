@@ -1,8 +1,11 @@
 #include <windows.h>
+#include <filesystem>
 #include "App.hpp"
 #include "core/Database.hpp"
 
 std::string App::get_db_path() {
+    std::string home = std::getenv("USERPROFILE");
+
     char exe_path[MAX_PATH];
     GetModuleFileNameA(NULL, exe_path, MAX_PATH);
     std::string path(exe_path);
@@ -10,6 +13,7 @@ std::string App::get_db_path() {
     if (pos != std::string::npos)
         path = path.substr(0, pos + 1);
     path += "cnc_monitor.db";
+    path = home + "/.config/cnc_monitor.db";
     return path;
 }
 
