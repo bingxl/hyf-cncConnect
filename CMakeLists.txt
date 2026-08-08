@@ -11,13 +11,26 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# ---- Incremental build optimizations ----
+
+# ccache: reuse cached compilation results so unchanged TUs don't recompile
+find_program(CCACHE_PROGRAM ccache)
+if(CCACHE_PROGRAM)
+    set(CMAKE_C_COMPILER_LAUNCHER ${CCACHE_PROGRAM})
+    set(CMAKE_CXX_COMPILER_LAUNCHER ${CCACHE_PROGRAM})
+    message(STATUS "ccache found: ${CCACHE_PROGRAM}")
+endif()
+
 # MSVC-specific flags
 if(MSVC)
     add_compile_options(/W3 /utf-8)
-    add_compile_definitions(_CRT_SECURE_NO_WARNINGS ONO8D)
+    add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
+    # Parallel compilation of multiple translation units
+    add_compile_options(/MP)
     set(CMAKE_RC_FLAGS "/utf-8")
+    # Incremental linking in Debug builds
     foreach(t EXE SHARED MODULE)
-        set(CMAKE_${t}_LINKER_FLAGS_DEBUG "${CMAKE_${t}_LINKER_FLAGS_DEBUG} /MANIFEST:NO /INCREMENTAL:NO")
+        set(CMAKE_${t}_LINKER_FLAGS_DEBUG "${CMAKE_${t}_LINKER_FLAGS_DEBUG} /MANIFEST:NO /INCREMENTAL")
     endforeach()
 
     # Force MSVC archiver/linker to avoid MSYS2 ar.exe on PATH
