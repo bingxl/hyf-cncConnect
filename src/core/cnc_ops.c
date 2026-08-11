@@ -666,6 +666,9 @@ int fetch_program_info(unsigned short handle, CncProgramInfo *prog)
     if (ret == EW_OK) prog->seq_number = seq.data;
     ret = cnc_rdblkcount(handle, &blk);
     if (ret == EW_OK) prog->blk_count = blk;
+    if (get_program_comment(handle, prog->prg_number,
+                            prog->comment, sizeof(prog->comment)) != 0)
+        prog->comment[0] = 0;
     return 0;
 }
 
@@ -704,6 +707,38 @@ int fetch_program_list(unsigned short handle, CncProgramList *list)
         list->comment[i][35] = 0;
     }
     return 0;
+}
+
+int get_program_comment(unsigned short handle, long prog_no, char *out, int size)
+{
+    PRGDIR2 dir[CNC_MAX_PROGRAMS];
+    short ret, i, top = 0, count;
+    int attempts = 0;
+
+    if (!out || size <= 0 || prog_no <= 0) return -1;
+    out[0] = 0;
+
+    for (;;) {
+        count = CNC_MAX_PROGRAMS;
+        ret = cnc_rdprogdir2(handle, 2, &top, &count, dir);
+        if (ret == EW_BUSY && ++attempts < 5) {
+            Sleep(50);
+            continue;
+        }
+        if (ret != EW_OK) return -1;
+        if (count <= 0) return -1;
+        if (count > CNC_MAX_PROGRAMS) count = CNC_MAX_PROGRAMS;
+        for (i = 0; i < count; i++) {
+            if (dir[i].number == (short)prog_no) {
+                _snprintf(out, size, "%s", dir[i].comment);
+                if (size > 0) out[size - 1] = 0;
+                return 0;
+            }
+        }
+        if (count < CNC_MAX_PROGRAMS) return -1;
+        top += (short)count;
+        if (top > 32000) return -1;
+    }
 }
 
 int fetch_macro_vars(unsigned short handle, CncMacroData *data)
@@ -798,6 +833,16 @@ int fetch_machine_data(const char *ip, int port, CncMachineData *data)
     fetch_dynamic(handle, &data->dyn);
     get_part_count(handle, &data->part_count);
     fetch_program_list(handle, &data->prog_list);
+    if (data->prog.prg_number > 0 && data->prog.comment[0] == 0) {
+        int pi;
+        for (pi = 0; pi < data->prog_list.count; pi++) {
+            if (data->prog_list.number[pi] == data->prog.prg_number) {
+                _snprintf(data->prog.comment, sizeof(data->prog.comment), "%s",
+                          data->prog_list.comment[pi]);
+                break;
+            }
+        }
+    }
     fetch_macro_vars(handle, &data->macro_vars);
     fetch_tool_offsets(handle, &data->tool_offsets);
     fetch_work_zero(handle, &data->work_zero);

@@ -62,6 +62,7 @@ typedef struct {
     int  prg_number;
     int  prg_main;
     char prg_name[36];
+    char comment[36];
     long seq_number;
     long blk_count;
 } CncProgramInfo;
@@ -159,6 +160,7 @@ int fetch_act_data(unsigned short handle, CncActData *act);
 int fetch_program_info(unsigned short handle, CncProgramInfo *prog);
 int fetch_dynamic(unsigned short handle, CncDynamicData *dyn);
 int fetch_program_list(unsigned short handle, CncProgramList *list);
+int get_program_comment(unsigned short handle, long prog_no, char *out, int size);
 int fetch_macro_vars(unsigned short handle, CncMacroData *data);
 int fetch_tool_offsets(unsigned short handle, CncToolOffsetData *data);
 int fetch_work_zero(unsigned short handle, CncWorkZeroData *data);

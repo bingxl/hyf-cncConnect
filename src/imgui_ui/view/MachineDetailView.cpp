@@ -336,6 +336,8 @@ void MachineDetailPage::draw(AppState& state)
                     kv_row("主程序号", "%d", d.prog.prg_main);
                     if (d.prog.prg_name[0])
                         kv_row("程序名称", "%s", d.prog.prg_name);
+                    if (d.prog.comment[0])
+                        kv_row("程序注释", "%s", d.prog.comment);
                     kv_row("序列号", "%ld", d.prog.seq_number);
                     kv_row("块计数", "%ld", d.prog.blk_count);
                     if (d.dyn.seqnum)
