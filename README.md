@@ -65,3 +65,7 @@ This project was developed with the assistance of [opencode](https://opencode.ai
 ## License
 
 MIT
+
+
+## 补充知识
+1. 走芯机一台机器最多存放 1000 个程序；

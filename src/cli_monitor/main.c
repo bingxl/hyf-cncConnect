@@ -32,10 +32,12 @@ static void print_usage(const char *prog)
     printf("  -show <prog>       Display program content (e.g. -show 1)\n");
     printf("  -monitor [ms]      Continuous monitoring mode (default: 1000ms)\n");
     printf("  -parts <cur> <tot> Macro vars for part count (default: #500 #501)\n");
+    printf("  -bench [n]         Measure program list read + comment lookup time (default: 5 runs)\n");
     printf("\nExamples:\n");
     printf("  %s 192.168.1.100\n", prog);
     printf("  %s 192.168.1.100 -show 1\n", prog);
     printf("  %s 192.168.11.192 8193 -monitor 500\n", prog);
+    printf("  %s 192.168.11.192 -bench 5\n", prog);
 }
 
 int main(int argc, char *argv[])
@@ -49,7 +51,11 @@ int main(int argc, char *argv[])
     short parts_total_var = 3902;
     int use_parts = 0;
     long show_prog = 0;
+    int bench_mode = 0;
+    int bench_iters = 5;
     int i;
+
+    setvbuf(stdout, NULL, _IONBF, 0);
 
     printf("============================================\n");
     printf("  CNC Monitor - FOCAS2 Communication Tool\n");
@@ -84,6 +90,13 @@ int main(int argc, char *argv[])
                 parts_total_var = (short)atoi(argv[i + 2]);
                 i += 2;
             }
+        } else if (strcmp(argv[i], "-bench") == 0) {
+            bench_mode = 1;
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                int n = atoi(argv[i + 1]);
+                if (n > 0) bench_iters = n;
+                i++;
+            }
         } else if (port == DEFAULT_PORT) {
             port = atoi(argv[i]);
             if (port <= 0 || port > 65535) {
@@ -91,6 +104,11 @@ int main(int argc, char *argv[])
                 return 1;
             }
         }
+    }
+
+    if (bench_mode) {
+        bench_program_comment(ip, port, bench_iters);
+        return 0;
     }
 
     if (cnc_connect(ip, port, &handle) != 0)

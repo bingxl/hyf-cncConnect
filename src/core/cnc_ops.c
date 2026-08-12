@@ -8,6 +8,19 @@
 #define AXIS_NAMES      "XYZABCUVW"
 #define DEFAULT_TIMEOUT 10
 
+static double now_ms(void)
+{
+    static LARGE_INTEGER freq;
+    static int init = 0;
+    LARGE_INTEGER t;
+    if (!init) {
+        QueryPerformanceFrequency(&freq);
+        init = 1;
+    }
+    QueryPerformanceCounter(&t);
+    return t.QuadPart * 1000.0 / freq.QuadPart;
+}
+
 const char* focas_error(short ret)
 {
     if (ret == EW_OK)       return "OK";
@@ -666,9 +679,6 @@ int fetch_program_info(unsigned short handle, CncProgramInfo *prog)
     if (ret == EW_OK) prog->seq_number = seq.data;
     ret = cnc_rdblkcount(handle, &blk);
     if (ret == EW_OK) prog->blk_count = blk;
-    if (get_program_comment(handle, prog->prg_number,
-                            prog->comment, sizeof(prog->comment)) != 0)
-        prog->comment[0] = 0;
     return 0;
 }
 
@@ -711,33 +721,64 @@ int fetch_program_list(unsigned short handle, CncProgramList *list)
 
 int get_program_comment(unsigned short handle, long prog_no, char *out, int size)
 {
-    PRGDIR2 dir[CNC_MAX_PROGRAMS];
-    short ret, i, top = 0, count;
+    PRGDIR3 dir[4];
+    short ret, count;
+    long top;
     int attempts = 0;
 
     if (!out || size <= 0 || prog_no <= 0) return -1;
     out[0] = 0;
 
+    /* Fast path: cnc_rdprogdir3 reads the directory starting from prog_no,
+       so the target program's comment is returned in a single call. */
     for (;;) {
-        count = CNC_MAX_PROGRAMS;
-        ret = cnc_rdprogdir2(handle, 2, &top, &count, dir);
+        top = prog_no;
+        count = 4;
+        memset(dir, 0, sizeof(dir));
+        ret = cnc_rdprogdir3(handle, 2, &top, &count, dir);
         if (ret == EW_BUSY && ++attempts < 5) {
             Sleep(50);
             continue;
         }
-        if (ret != EW_OK) return -1;
-        if (count <= 0) return -1;
-        if (count > CNC_MAX_PROGRAMS) count = CNC_MAX_PROGRAMS;
-        for (i = 0; i < count; i++) {
-            if (dir[i].number == (short)prog_no) {
+        if (ret != EW_OK) break;
+        if (count <= 0) break;
+        if (count > 4) count = 4;
+        for (short i = 0; i < count; i++) {
+            if (dir[i].number == prog_no) {
                 _snprintf(out, size, "%s", dir[i].comment);
                 if (size > 0) out[size - 1] = 0;
                 return 0;
             }
         }
-        if (count < CNC_MAX_PROGRAMS) return -1;
-        top += (short)count;
-        if (top > 32000) return -1;
+        break;
+    }
+
+    /* Fallback: paged scan via cnc_rdprogdir2 (old controllers). */
+    {
+        PRGDIR2 dir2[CNC_MAX_PROGRAMS];
+        short ret2, i, count2, top2 = 0;
+        attempts = 0;
+        for (;;) {
+            count2 = CNC_MAX_PROGRAMS;
+            ret2 = cnc_rdprogdir2(handle, 2, &top2, &count2, dir2);
+            if (ret2 == EW_BUSY && ++attempts < 5) {
+                Sleep(50);
+                continue;
+            }
+            if (ret2 != EW_OK) return -1;
+            if (count2 <= 0) return -1;
+            if (count2 > CNC_MAX_PROGRAMS) count2 = CNC_MAX_PROGRAMS;
+            for (i = 0; i < count2; i++) {
+                if (dir2[i].number == (short)prog_no) {
+                    _snprintf(out, size, "%s", dir2[i].comment);
+                    if (size > 0) out[size - 1] = 0;
+                    return 0;
+                }
+            }
+            if (count2 < CNC_MAX_PROGRAMS) return -1;
+            top2 += count2;
+            if (top2 > 32000) return -1;
+        }
     }
 }
 
@@ -833,7 +874,7 @@ int fetch_machine_data(const char *ip, int port, CncMachineData *data)
     fetch_dynamic(handle, &data->dyn);
     get_part_count(handle, &data->part_count);
     fetch_program_list(handle, &data->prog_list);
-    if (data->prog.prg_number > 0 && data->prog.comment[0] == 0) {
+    if (data->prog.prg_number > 0) {
         int pi;
         for (pi = 0; pi < data->prog_list.count; pi++) {
             if (data->prog_list.number[pi] == data->prog.prg_number) {
@@ -842,6 +883,9 @@ int fetch_machine_data(const char *ip, int port, CncMachineData *data)
                 break;
             }
         }
+        if (data->prog.comment[0] == 0)
+            get_program_comment(handle, data->prog.prg_number,
+                                data->prog.comment, sizeof(data->prog.comment));
     }
     fetch_macro_vars(handle, &data->macro_vars);
     fetch_tool_offsets(handle, &data->tool_offsets);
@@ -852,5 +896,191 @@ int fetch_machine_data(const char *ip, int port, CncMachineData *data)
     cnc_disconnect(handle);
     data->ok = 1;
     if (data->alarms.count < 0) data->alarms.count = 0;
+    return 0;
+}
+
+int bench_program_comment(const char *ip, int port, int iterations)
+{
+    unsigned short handle;
+    ODBPRO prg;
+    double t_conn;
+    double p_best = 1e9, p_worst = 0, p_sum = 0;
+    double s_best = 1e9, s_worst = 0, s_sum = 0;
+    int found = 0, last_count = 0, max_pages = 0, ran = 0;
+    int i;
+
+    if (iterations <= 0) iterations = 1;
+    printf("Benchmark: program list read + comment lookup\n");
+    printf("  iterations : %d\n", iterations);
+    printf("  query mode : cnc_rdprogdir2 (kind=2, %d/page) page-1 read +\n",
+           CNC_MAX_PROGRAMS);
+    printf("               paged comment search (like get_program_comment)\n");
+
+    t_conn = now_ms();
+    if (cnc_connect(ip, port, &handle) != 0)
+        return -1;
+    t_conn = now_ms() - t_conn;
+    cnc_settimeout(handle, 5);
+    printf("  connect    : %.2f ms\n\n", t_conn);
+
+    memset(&prg, 0, sizeof(prg));
+    if (cnc_rdprgnum(handle, &prg) != EW_OK)
+        prg.data = 0;
+    printf("  search target (current program) : O%04ld\n", prg.data);
+    printf("  NOTE: when target is beyond page 1, the search pages through the\n");
+    printf("        whole directory (this is the real get_program_comment path).\n\n");
+
+    /* probe: can cnc_rdprogdir2 return more than CNC_MAX_PROGRAMS per call? */
+    {
+        PRGDIR2 big[512];
+        static const short sizes[] = { 100, 300, 512 };
+        int k;
+        printf("  probe (single-call page size):\n");
+        for (k = 0; k < 3; k++) {
+            short req = sizes[k], got = req, r;
+            short top = 0;
+            double t0;
+            memset(big, 0, sizeof(big));
+            t0 = now_ms();
+            r = cnc_rdprogdir2(handle, 2, &top, &got, big);
+            t0 = now_ms() - t0;
+            if (r == EW_OK)
+                printf("    req=%4d -> got=%4d   time=%.2f ms\n", req, got, t0);
+            else
+                printf("    req=%4d -> %s (%d)\n", req, focas_error(r), r);
+        }
+        printf("\n");
+    }
+
+    /* probe: targeted directory read starting from a given program number */
+    {
+        PRGDIR3 d3[8];
+        PRGDIR4 d4[8];
+        short cnt;
+        long top;
+        short r;
+        int k;
+
+        printf("  probe (targeted read by program number):\n");
+
+        top = prg.data;
+        cnt = 5;
+        memset(d3, 0, sizeof(d3));
+        {
+            double t0 = now_ms();
+            r = cnc_rdprogdir3(handle, 2, &top, &cnt, d3);
+            t0 = now_ms() - t0;
+            printf("    cnc_rdprogdir3(top=O%04ld): ret=%s(%d) cnt=%d  time=%.2f ms\n",
+                   prg.data, focas_error(r), r, cnt, t0);
+        }
+        for (k = 0; k < cnt && k < 5; k++)
+            printf("      [%d] O%04ld  len=%ld  comment=%.51s\n",
+                   k, d3[k].number, d3[k].length, d3[k].comment);
+
+        cnt = 5;
+        memset(d4, 0, sizeof(d4));
+        r = cnc_rdprogdir4(handle, 2, prg.data, &cnt, d4);
+        printf("    cnc_rdprogdir4(number=O%04ld): ret=%s(%d) cnt=%d\n",
+               prg.data, focas_error(r), r, cnt);
+        for (k = 0; k < cnt && k < 5; k++)
+            printf("      [%d] O%04ld  len=%ld  comment=%.51s\n",
+                   k, d4[k].number, d4[k].length, d4[k].comment);
+        printf("\n");
+    }
+
+    {
+        char cb[36];
+        double t0 = now_ms();
+        int rc = get_program_comment(handle, prg.data, cb, sizeof(cb));
+        t0 = now_ms() - t0;
+        printf("  get_program_comment(O%04ld) [new impl]: ret=%d time=%.2f ms  comment=\"%s\"\n",
+               prg.data, rc, t0, cb);
+        printf("\n");
+    }
+
+    for (i = 0; i < iterations; i++) {
+        PRGDIR2 dir[CNC_MAX_PROGRAMS];
+        short ret, count, j, top;
+        long target = prg.data;
+        double t_page, t_search;
+        int fi, pages;
+
+        /* --- page-1 read (fetch_program_list behavior) --- */
+        top = 0;
+        count = CNC_MAX_PROGRAMS;
+        t_page = now_ms();
+        ret = cnc_rdprogdir2(handle, 2, &top, &count, dir);
+        t_page = now_ms() - t_page;
+        if (ret != EW_OK) {
+            printf("  iter %2d: cnc_rdprogdir2 %s (%d)\n",
+                   i + 1, focas_error(ret), ret);
+            continue;
+        }
+        if (count < 0) count = 0;
+        if (count > CNC_MAX_PROGRAMS) count = CNC_MAX_PROGRAMS;
+        last_count = count;
+        ran++;
+        if (t_page < p_best) p_best = t_page;
+        if (t_page > p_worst) p_worst = t_page;
+        p_sum += t_page;
+
+        /* --- full paged comment search (get_program_comment behavior) --- */
+        pages = 1;
+        fi = -1;
+        for (j = 0; j < count; j++)
+            if (dir[j].number == (short)target) { fi = j; break; }
+
+        t_search = t_page;
+        while (fi < 0 && count == CNC_MAX_PROGRAMS && top <= 32000) {
+            top += (short)count;
+            count = CNC_MAX_PROGRAMS;
+            t_page = now_ms();
+            ret = cnc_rdprogdir2(handle, 2, &top, &count, dir);
+            t_page = now_ms() - t_page;
+            t_search += t_page;
+            pages++;
+            if (ret != EW_OK) break;
+            if (count < 0) count = 0;
+            if (count > CNC_MAX_PROGRAMS) count = CNC_MAX_PROGRAMS;
+            for (j = 0; j < count; j++)
+                if (dir[j].number == (short)target) { fi = j; break; }
+        }
+
+        if (t_search < s_best) s_best = t_search;
+        if (t_search > s_worst) s_worst = t_search;
+        s_sum += t_search;
+        if (fi >= 0) found++;
+        if (pages > max_pages) max_pages = pages;
+
+        printf("  iter %2d:  page1=%8.2f ms (%2d programs)   comment search="
+               "%8.2f ms (%d pages)   %s\n",
+               i + 1, t_page, count, t_search, pages, fi >= 0 ? "hit" : "miss");
+    }
+
+    printf("\n--- summary ---\n");
+    if (ran > 0) {
+        printf("  page-1 directory read (fetch_program_list):\n");
+        printf("    avg %8.2f  min %8.2f  max %8.2f ms   (%d programs)\n",
+               p_sum / ran, p_best, p_worst, last_count);
+        printf("  comment search total = comment scan over directory pages\n");
+        printf("    avg %8.2f  min %8.2f  max %8.2f ms   (up to %d pages)\n",
+               s_sum / ran, s_best, s_worst, max_pages);
+        printf("  comment %s (%d/%d iterations)\n",
+               found > 0 ? "FOUND" : "NOT FOUND", found, ran);
+    } else {
+        printf("  no successful reads\n");
+    }
+
+    if (ran > 0) {
+        double p1 = p_sum / ran, full = s_sum / ran;
+        printf("\n  Old code path: get_program_comment (paged) + fetch_program_list (1 page)\n");
+        printf("    => ~%.2f ms per refresh\n", full + p1);
+        printf("  New code path: fetch_program_list (1 page) + comment only if not in page 1\n");
+        printf("    => ~%.2f ms per refresh (target beyond page 1, this machine)\n", full);
+        printf("    => ~%.2f ms per refresh (target in page 1)\n", p1);
+        printf("  Optimization saves ~%.2f ms (one page-1 read) per refresh.\n", p1);
+    }
+
+    cnc_disconnect(handle);
     return 0;
 }

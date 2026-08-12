@@ -167,6 +167,7 @@ int fetch_work_zero(unsigned short handle, CncWorkZeroData *data);
 int fetch_parameters(unsigned short handle, long *param_6750, long *setting_0);
 int fetch_path_info(unsigned short handle, short *current, short *count);
 int fetch_machine_data(const char *ip, int port, CncMachineData *data);
+int bench_program_comment(const char *ip, int port, int iterations);
 
 #ifdef __cplusplus
 }
