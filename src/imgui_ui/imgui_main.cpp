@@ -17,6 +17,7 @@
 #include "view/MachineMgrView.hpp"
 #include "view/MachineDetailView.hpp"
 #include "view/HistoryView.hpp"
+#include "view/MachiningView.hpp"
 
 #pragma comment(lib, "d3d9.lib")
 #pragma comment(lib, "dbghelp.lib")
@@ -140,6 +141,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
     PageRegistry::instance().add(std::make_unique<HistorySavePage>());
     PageRegistry::instance().add(std::make_unique<HistoryBrowsePage>());
     PageRegistry::instance().add(std::make_unique<HistoryCalcPage>());
+    PageRegistry::instance().add(std::make_unique<MachiningStatsPage>());
 
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(wc);

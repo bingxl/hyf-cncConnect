@@ -32,6 +32,7 @@ add_executable(cnc_win32ui WIN32
     viewmodel/MachineMgrVm.cpp
     viewmodel/MachineDetailVm.cpp
     viewmodel/HistoryVm.cpp
+    viewmodel/MachiningVm.cpp
 
     # Views
     view/MainView.cpp
@@ -39,6 +40,7 @@ add_executable(cnc_win32ui WIN32
     view/MachineMgrView.cpp
     view/MachineDetailView.cpp
     view/HistoryView.cpp
+    view/MachiningView.cpp
 )
 
 target_include_directories(cnc_win32ui

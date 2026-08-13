@@ -4,7 +4,10 @@
 *.lib
 !third_party/fwlib/*
 third_party/fwlib/*.a
+third_party/mtconnect-agent
+third_party/adapter-Version
 result.txt
+imgui.ini
 .vsbuild_cache
 
 # CMake

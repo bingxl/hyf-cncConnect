@@ -139,6 +139,27 @@ public:
         return result;
     }
 
+    // --- machining-time / product statistics ---
+
+    std::vector<MachineBucket> get_buckets(int machine_id, long t0, long t1) {
+        std::lock_guard lock(mtx_);
+        MachineBucket records[1024];
+        int count = ::db_get_buckets(db_, machine_id, t0, t1, records, 1024);
+        return std::vector<MachineBucket>(records, records + count);
+    }
+
+    std::vector<ProductGroup> get_products(int machine_id, long t0, long t1) {
+        std::lock_guard lock(mtx_);
+        ProductGroup records[512];
+        int count = ::db_get_products(db_, machine_id, t0, t1, records, 512);
+        return std::vector<ProductGroup>(records, records + count);
+    }
+
+    bool get_bucket_time_range(int machine_id, long* tmin, long* tmax) {
+        std::lock_guard lock(mtx_);
+        return ::db_get_sample_time_range(db_, machine_id, tmin, tmax) == 0;
+    }
+
     Database(const Database&) = delete;
     Database& operator=(const Database&) = delete;
 

@@ -74,6 +74,19 @@ int cnc_connect(const char *ip, int port, unsigned short *handle)
     return 0;
 }
 
+/* Connect with an explicit timeout (seconds). Used by the resident sampler so a
+   single unreachable machine does not block the whole sampling loop for long.
+   Logs nothing to avoid spamming the daemon console. */
+int cnc_connect_timeout(const char *ip, int port, int timeout_secs, unsigned short *handle)
+{
+    short ret;
+    int t = (timeout_secs < 1) ? 1 : timeout_secs;
+    ret = cnc_allclibhndl3(ip, (unsigned short)port, (long)t, handle);
+    if (ret != EW_OK)
+        return -1;
+    return 0;
+}
+
 void cnc_disconnect(unsigned short handle)
 {
     cnc_freelibhndl(handle);

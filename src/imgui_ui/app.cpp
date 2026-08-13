@@ -5,16 +5,16 @@
 
 std::string App::get_db_path() {
     std::string home = std::getenv("USERPROFILE");
+    if (home.empty()) home = ".";
 
-    char exe_path[MAX_PATH];
-    GetModuleFileNameA(NULL, exe_path, MAX_PATH);
-    std::string path(exe_path);
-    auto pos = path.find_last_of("\\/");
-    if (pos != std::string::npos)
-        path = path.substr(0, pos + 1);
-    path += "cnc_monitor.db";
-    path = home + "/.config/cnc_monitor.db";
-    return path;
+    // All configuration, database and output files live together under
+    // %USERPROFILE%\data-collect\ (single source of truth).
+    namespace fs = std::filesystem;
+    fs::path dir = fs::path(home) / "data-collect";
+    std::error_code ec;
+    if (!fs::exists(dir)) fs::create_directories(dir, ec);
+
+    return (dir / "cnc_monitor.db").string();
 }
 
 bool App::init() {

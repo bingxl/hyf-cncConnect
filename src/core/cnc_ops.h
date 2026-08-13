@@ -128,6 +128,7 @@ typedef struct {
 const char* focas_error(short ret);
 void print_line(const char *title);
 int cnc_connect(const char *ip, int port, unsigned short *handle);
+int cnc_connect_timeout(const char *ip, int port, int timeout_secs, unsigned short *handle);
 void cnc_disconnect(unsigned short handle);
 
 int print_system_info(unsigned short handle);

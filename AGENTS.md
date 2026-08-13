@@ -10,8 +10,11 @@ A C-based CNC monitoring tool that communicates with FANUC CNC controllers via t
 |------|---------|
 | `main.c` | Interactive CNC monitor entry point |
 | `collect.c` | Batch CNC data collector entry point |
+| `src/cli_sampler/sampler.c` | Resident sampling daemon (`cnc_sampler.exe`) |
 | `cnc_ops.h/c` | All CNC machine operations (connect, read data, monitor) |
-| `db_ops.h/c` | SQLite database operations (machines, history, batches) |
+| `db_ops.h/c` | SQLite database operations (machines, history, batches, machine_samples, machine_latest, archival) |
+| `src/imgui_ui/viewmodel/MachiningVm.*` | Machining-stats DB queries (bucket + product grouping), CSV export |
+| `src/imgui_ui/view/MachiningView.*` | 「加工统计」GUI page (machine + time range + product tables) |
 | `third_party/sqlite3/sqlite3.h/c` | SQLite 3.52.0 amalgamation |
 | `mazak_ops.h/c` | Mazak machine operations (MTConnect, FTP, SNMP, raw TCP) |
 | `file_io.h/c` | Config file read (`jichuang.txt`) + result file write (`result.txt`) |
@@ -47,6 +50,16 @@ Examples:
 
 Batch collector (reads machines from `jichuang.txt`):
   cnc_collect.exe
+
+Resident sampling daemon (machining-time / product statistics collector):
+  cnc_sampler.exe [-interval <secs>] [-log <path>]
+
+  Reads the machine list from `%USERPROFILE%\data-collect\jichuang.txt`
+  (or `jichuang.txt` in the working dir). Writes samples to
+  `%USERPROFILE%\data-collect\cnc_monitor.db` (`machine_samples` +
+  `machine_latest`). Sample interval defaults to config.txt (`interval=`),
+  then 5s. Samples older than `retention_days` (default 90) are moved daily
+  to `%USERPROFILE%\data-collect\archive\archive_YYYYMMDD.db`.
 
 Mazak machine test tool:
   cnc_mazak_test.exe <IP> [port] [options]
@@ -87,6 +100,17 @@ Modularized C project with three layers:
 - **`file_io.h/c`** — File I/O: parses `jichuang.txt` (machine list) and writes `result.txt` (collected data).
 - **`mazak_ops.h/c`** — Mazak machine operations via MTConnect, raw TCP, FTP, SNMP, OPC UA.
 - **`main.c`** / **`collect.c`** / **`mazak_test.c`** — Entry points using the above libraries.
+- **`src/cli_sampler/sampler.c`** — Resident sampling daemon (`cnc_sampler.exe`). Keeps one long-lived FOCAS connection per machine, samples status/program/part-count on a configurable interval, writes to `machine_samples`, upserts `machine_latest`, and moves samples older than `retention_days` into a dated archive db. Optional `-interval <secs>` overrides `config.txt`.
+- **`MachineVm`/`MachiningView`** — 「加工统计」GUI page: pick machine + time range (今日/昨日/白班/夜班 quick buttons) to view per-30-min bucket machining time and per-product (program comment) grouping, with CSV export.
+
+## Machining-time & product statistics
+
+- Data source: `machine_samples` (raw samples) + `machine_latest` (per-machine latest) in `%USERPROFILE%\data-collect\cnc_monitor.db`.
+- **A machine counts as "machining" when `run==3` (STaRT) AND `aut==1` (MEM memory auto) AND `tmmode==0` (T/lathe mode)**.
+  - IMPORTANT: `cnc_statinfo`'s `run` is an enum, not a boolean: 0=reset, 1=STOP, 2=HOLD, **3=STaRT**, 4=MSTR. Using `run==1` would exclude all machining time.
+- Machining time ≈ (count of machining samples) × sample interval. Buckets are aligned to wall-clock 30-min windows (`ts/1800`).
+- Products are grouped by `program_comment` (the product code). Produced parts = `part_total` delta within the range (negative deltas clamped to 0).
+- GUI no longer needs direct FOCAS for the stats page — it reads from the sampler's DB.
 
 ## Dependencies
 

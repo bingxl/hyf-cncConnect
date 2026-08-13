@@ -7,7 +7,8 @@ enum class UiPage {
     MachineDetail,
     HistorySave,
     HistoryBrowse,
-    HistoryCalc
+    HistoryCalc,
+    MachiningStats
 };
 
 struct AppState {
