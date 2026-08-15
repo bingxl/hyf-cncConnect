@@ -1,0 +1,68 @@
+<Device name="%NAME%" uuid="%NAME%" id="%NAME%">
+      <Description>SIM %NAME% (simulated)</Description>
+      <DataItems>
+        <DataItem id="avail" type="AVAILABILITY" category="EVENT"/>
+        <DataItem id="estop" type="EMERGENCY_STOP" category="EVENT"/>
+        <DataItem id="execution" type="EXECUTION" category="EVENT"/>
+        <DataItem id="mode" type="CONTROLLER_MODE" category="EVENT"/>
+        <DataItem id="line" type="LINE" category="EVENT"/>
+        <DataItem id="program" type="PROGRAM" category="EVENT"/>
+        <DataItem id="programInfo" type="PROGRAM_COMMENT" category="EVENT"/>
+        <DataItem id="block" type="BLOCK" category="EVENT"/>
+        <DataItem id="pathFeedrate" type="PATH_FEEDRATE" category="SAMPLE"/>
+        <DataItem id="pathPosition" type="PATH_POSITION" category="SAMPLE"/>
+        <DataItem id="part" type="SAMPLE" category="SAMPLE" name="partCount"/>
+        <DataItem id="part_current" type="SAMPLE" category="SAMPLE" name="partCurrent"/>
+        <DataItem id="part_required" type="SAMPLE" category="SAMPLE" name="partRequired"/>
+        <DataItem id="part_total" type="SAMPLE" category="SAMPLE" name="partTotal"/>
+        <DataItem id="tmmode" type="SAMPLE" category="SAMPLE" name="tmMode"/>
+        <DataItem id="servo" type="FAULT" category="CONDITION"/>
+        <DataItem id="comms" type="FAULT" category="CONDITION"/>
+        <DataItem id="logic" type="FAULT" category="CONDITION"/>
+        <DataItem id="motion" type="FAULT" category="CONDITION"/>
+        <DataItem id="system" type="FAULT" category="CONDITION"/>
+        <DataItem id="spindle" type="FAULT" category="CONDITION"/>
+      </DataItems>
+      <Components>
+        <Axes name="Axes" id="AXES">
+          <Components>
+            <Linear name="X" id="AX_X">
+              <DataItems>
+                <DataItem id="Xact" type="POSITION" category="SAMPLE"/>
+                <DataItem id="Xcom" type="POSITION_COMMANDED" category="SAMPLE"/>
+                <DataItem id="Xload" type="LOAD" category="SAMPLE"/>
+                <DataItem id="Xtravel" type="AXIS_TRAVEL" category="CONDITION"/>
+                <DataItem id="Xovertemp" type="AXIS_OVERTEMPERATURE" category="CONDITION"/>
+                <DataItem id="Xservo" type="AXIS_SERVO" category="CONDITION"/>
+              </DataItems>
+            </Linear>
+            <Linear name="Y" id="AX_Y">
+              <DataItems>
+                <DataItem id="Yact" type="POSITION" category="SAMPLE"/>
+                <DataItem id="Ycom" type="POSITION_COMMANDED" category="SAMPLE"/>
+                <DataItem id="Yload" type="LOAD" category="SAMPLE"/>
+                <DataItem id="Ytravel" type="AXIS_TRAVEL" category="CONDITION"/>
+                <DataItem id="Yovertemp" type="AXIS_OVERTEMPERATURE" category="CONDITION"/>
+                <DataItem id="Yservo" type="AXIS_SERVO" category="CONDITION"/>
+              </DataItems>
+            </Linear>
+            <Linear name="Z" id="AX_Z">
+              <DataItems>
+                <DataItem id="Zact" type="POSITION" category="SAMPLE"/>
+                <DataItem id="Zcom" type="POSITION_COMMANDED" category="SAMPLE"/>
+                <DataItem id="Zload" type="LOAD" category="SAMPLE"/>
+                <DataItem id="Ztravel" type="AXIS_TRAVEL" category="CONDITION"/>
+                <DataItem id="Zovertemp" type="AXIS_OVERTEMPERATURE" category="CONDITION"/>
+                <DataItem id="Zservo" type="AXIS_SERVO" category="CONDITION"/>
+              </DataItems>
+            </Linear>
+          </Components>
+        </Axes>
+        <Electric name="Spindle" id="SPINDLE">
+          <DataItems>
+            <DataItem id="Sspeed" type="SPINDLE_SPEED" category="SAMPLE"/>
+            <DataItem id="Sload" type="LOAD" category="SAMPLE"/>
+          </DataItems>
+        </Electric>
+      </Components>
+    </Device>

@@ -6,7 +6,7 @@ add_subdirectory(db)
 # CLI executables
 add_subdirectory(cli_monitor)
 add_subdirectory(cli_collector)
-add_subdirectory(cli_mazaktest)
+#add_subdirectory(cli_mazaktest)
 
 # Resident sampling daemon
 add_subdirectory(cli_sampler)

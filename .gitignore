@@ -20,3 +20,4 @@ Makefile
 *.sln
 *.vcxproj
 .vs/
+**/node_modules
