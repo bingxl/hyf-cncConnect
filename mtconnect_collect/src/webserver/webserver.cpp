@@ -24,7 +24,8 @@
 #include <map>
 #include <cstdarg>
 
-#include "sqlite3.h"
+#include "db/db.hpp"
+#include "db/stats_db.hpp"
 
 #pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "ws2_32.lib")
@@ -34,6 +35,8 @@ namespace {
 const size_t MAX_HTTP = 65536;
 const size_t MAX_ROWS = 1000000;
 const int SAMPLE_INTERVAL_DEFAULT = 10;
+/* 相邻样本间隔超过该值视为断联/关机：该时段不计入开机时间与加工时间 */
+const long long POWER_GAP_MAX = 90;
 
 /* ---------- small string helpers ---------- */
 std::string url_decode(const std::string &src)
@@ -123,6 +126,7 @@ struct Sample {
     std::string tmmode;
     std::string comment;
     long long part_total = -1;
+    int power = -1; /* 1=开机在线, 0=关机/断联, -1=旧数据无记录(视为开机) */
 };
 
 struct SampleSet {
@@ -133,20 +137,48 @@ struct SampleSet {
 
 bool is_machining(const Sample &s)
 {
-    if (s.execution != "ACTIVE") return false;
-    if (s.mode != "AUTOMATIC") return false;
-    if (!s.tmmode.empty() && s.tmmode != "0") return false;
-    return true;
+    return s.power != 0 && s.execution == "ACTIVE" && s.mode == "AUTOMATIC";
 }
 
-bool load_samples(sqlite3 *db, long long from, long long to,
+/* 相邻样本时间差累加：样本 i 加工中则累加 ts[i+1]-ts[i]（同机器按 ts 有序）。
+   相比“样本数 × 平均间隔”，对缺行/间隔不均稳健，误差仅来自采样点之间的状态翻转。 */
+static long long mach_sec_range(const SampleSet &ss, const std::string &machine)
+{
+    long long total = 0;
+    const Sample *prev = nullptr;
+    for (const auto &s : ss.rows) {
+        if (!machine.empty() && s.machine != machine) continue;
+        if (prev && is_machining(*prev) && s.ts > prev->ts &&
+            s.ts - prev->ts <= POWER_GAP_MAX)
+            total += s.ts - prev->ts;
+        prev = &s;
+    }
+    return total;
+}
+
+/* 开机时间：相邻样本时间差累加，样本 i 开机（power!=0，NULL 旧数据视为开机）则累加 */
+static long long power_sec_range(const SampleSet &ss, const std::string &machine)
+{
+    long long total = 0;
+    const Sample *prev = nullptr;
+    for (const auto &s : ss.rows) {
+        if (!machine.empty() && s.machine != machine) continue;
+        if (prev && prev->power != 0 && s.ts > prev->ts &&
+            s.ts - prev->ts <= POWER_GAP_MAX)
+            total += s.ts - prev->ts;
+        prev = &s;
+    }
+    return total;
+}
+
+bool load_samples(db::Database *db, long long from, long long to,
                   const std::string &machine, SampleSet *ss)
 {
     static const char *sqlAll =
-        "SELECT ts,machine,execution,mode,tmmode,comment,part_total "
+        "SELECT ts,machine,execution,mode,tmmode,comment,part_total,power "
         "FROM samples WHERE ts>=?1 AND ts<=?2 ORDER BY ts;";
     static const char *sqlOne =
-        "SELECT ts,machine,execution,mode,tmmode,comment,part_total "
+        "SELECT ts,machine,execution,mode,tmmode,comment,part_total,power "
         "FROM samples WHERE ts>=?1 AND ts<=?2 AND machine=?3 ORDER BY ts;";
     const char *sql = machine.empty() ? sqlAll : sqlOne;
 
@@ -155,24 +187,24 @@ bool load_samples(sqlite3 *db, long long from, long long to,
     ss->first_ts = ss->last_ts = 0;
     ss->interval_sec = SAMPLE_INTERVAL_DEFAULT;
 
-    sqlite3_stmt *st = nullptr;
-    if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) != SQLITE_OK) return false;
-    sqlite3_bind_int64(st, 1, from);
-    sqlite3_bind_int64(st, 2, to);
-    if (!machine.empty()) sqlite3_bind_text(st, 3, machine.c_str(), -1, SQLITE_STATIC);
+    auto st = db->prepare(sql);
+    if (!st) return false;
+    st->bind_int64(1, from);
+    st->bind_int64(2, to);
+    if (!machine.empty()) st->bind_text(3, machine);
 
-    while (ss->rows.size() < MAX_ROWS && sqlite3_step(st) == SQLITE_ROW) {
+    while (ss->rows.size() < MAX_ROWS && st->step()) {
         Sample r;
-        r.ts = sqlite3_column_int64(st, 0);
-        if (auto *p = sqlite3_column_text(st, 1)) r.machine = (const char *)p;
-        if (auto *p = sqlite3_column_text(st, 2)) r.execution = (const char *)p;
-        if (auto *p = sqlite3_column_text(st, 3)) r.mode = (const char *)p;
-        if (auto *p = sqlite3_column_text(st, 4)) r.tmmode = (const char *)p;
-        if (auto *p = sqlite3_column_text(st, 5)) r.comment = (const char *)p;
-        r.part_total = sqlite3_column_int64(st, 6);
+        r.ts = st->column_int64(0);
+        r.machine = st->column_text(1);
+        r.execution = st->column_text(2);
+        r.mode = st->column_text(3);
+        r.tmmode = st->column_text(4);
+        r.comment = st->column_text(5);
+        r.part_total = st->column_int64(6);
+        r.power = st->column_is_null(7) ? -1 : st->column_int(7);
         ss->rows.push_back(std::move(r));
     }
-    sqlite3_finalize(st);
 
     if (!ss->rows.empty()) {
         ss->first_ts = ss->rows.front().ts;
@@ -212,7 +244,7 @@ std::string api_summary(const SampleSet &ss)
     std::string o = "{\"items\":[";
     bool first = true;
     for (const auto &name : mach) {
-        long long mach_sec = 0, cnt = 0, sample_cnt = 0, mfirst = 0, mlast = 0;
+        long long cnt = 0, sample_cnt = 0, mfirst = 0, mlast = 0;
         long long first_total = -1, last_total = -1;
         const Sample *last = nullptr;
 
@@ -228,14 +260,23 @@ std::string api_summary(const SampleSet &ss)
             }
             last = &s;
         }
-        long long mins = SAMPLE_INTERVAL_DEFAULT;
-        if (sample_cnt > 1 && mlast > mfirst) {
-            long long d = (mlast - mfirst) / (sample_cnt - 1);
-            if (d >= 1 && d <= 3600) mins = d;
+        long long mach_sec = mach_sec_range(ss, name);
+        long long power_sec = power_sec_range(ss, name);
+        /* 产量 = part_total 正增量求和：计数可能清零/重启（如批次结束、断电），
+           首尾差值会漏算；只要相邻样本 part_total 上升就累加差值 */
+        long long produced = 0;
+        {
+            const Sample *prev = nullptr;
+            for (const auto &s : ss.rows) {
+                if (s.machine != name) continue;
+                if (prev && prev->part_total >= 0 && s.part_total >= 0 &&
+                    s.part_total > prev->part_total)
+                    produced += s.part_total - prev->part_total;
+                prev = &s;
+            }
         }
-        mach_sec = cnt * mins;
-        long long produced = (first_total >= 0 && last_total >= first_total) ? last_total - first_total : 0;
-        double util = (mlast > mfirst) ? (double)mach_sec / (double)(mlast - mfirst) : 0.0;
+        double util = power_sec > 0 ? (double)mach_sec / (double)power_sec : 0.0;
+        if (util > 1.0) util = 1.0;
 
         std::string last_exec, last_mode, last_comment;
         long long last_ts = 0;
@@ -248,11 +289,11 @@ std::string api_summary(const SampleSet &ss)
         if (!first) o += ",";
         first = false;
         fmt(o,
-            "{\"machine\":\"%s\",\"mach_sec\":%lld,\"util_rate\":%.3f,"
+            "{\"machine\":\"%s\",\"mach_sec\":%lld,\"power_sec\":%lld,\"util_rate\":%.3f,"
             "\"part_total_start\":%lld,\"part_total_end\":%lld,\"produced\":%lld,"
             "\"sample_count\":%lld,\"machining_count\":%lld,"
             "\"last\":{\"execution\":\"%s\",\"mode\":\"%s\",\"comment\":\"%s\",\"ts\":%lld}}",
-            name.c_str(), mach_sec, util, first_total, last_total, produced,
+            name.c_str(), mach_sec, power_sec, util, first_total, last_total, produced,
             sample_cnt, cnt, last_exec.c_str(), last_mode.c_str(), last_comment.c_str(), last_ts);
     }
     o += "]}";
@@ -267,19 +308,35 @@ std::string api_machining(const SampleSet &ss, int bucket, const std::string &ma
 
     long long bstart = (ss.first_ts / bucket) * bucket;
     long long bend = (ss.last_ts / bucket) * bucket;
+    std::map<long long, long long> secs, psecs, cnts, scnts;
+    /* 相邻样本差必须按“同一台机床”计算：ALL 模式下各行按 ts 全局交错，
+       用单个 prev 会把不同机床的样本当成相邻，导致加工/开机时间趋近 0 */
+    std::map<std::string, const Sample *> prevs;
+    for (const auto &s : ss.rows) {
+        long long b = (s.ts / bucket) * bucket;
+        scnts[b]++;
+        if (is_machining(s)) cnts[b]++;
+        const Sample *prev = prevs[s.machine];
+        if (prev && s.ts > prev->ts && s.ts - prev->ts <= POWER_GAP_MAX) {
+            long long t0 = prev->ts, t1 = s.ts;
+            for (long long bb = (t0 / bucket) * bucket; bb < t1; bb += bucket) {
+                long long lo = bb > t0 ? bb : t0;
+                long long hi = (bb + bucket < t1) ? bb + bucket : t1;
+                if (hi <= lo) continue;
+                if (is_machining(*prev)) secs[bb] += hi - lo;
+                if (prev->power != 0) psecs[bb] += hi - lo;
+            }
+        }
+        prevs[s.machine] = &s;
+    }
     bool first = true;
     for (long long b = bstart; b <= bend; b += bucket) {
-        long long cnt = 0, scnt = 0;
-        for (const auto &s : ss.rows) {
-            if (s.ts < b || s.ts >= b + bucket) continue;
-            scnt++;
-            if (is_machining(s)) cnt++;
-        }
-        if (scnt > 0) {
+        if (scnts[b] > 0) {
             if (!first) o += ",";
             first = false;
-            fmt(o, "{\"bucket_ts\":%lld,\"mach_sec\":%lld,\"machining_count\":%lld,\"sample_count\":%lld}",
-                b, cnt * ss.interval_sec, cnt, scnt);
+            fmt(o, "{\"bucket_ts\":%lld,\"mach_sec\":%lld,\"power_sec\":%lld,"
+                   "\"machining_count\":%lld,\"sample_count\":%lld}",
+                b, secs[b], psecs[b], cnts[b], scnts[b]);
         }
     }
     o += "]}";
@@ -293,37 +350,47 @@ std::string api_production(const SampleSet &ss, int bucket, const std::string &m
 
     long long bstart = (ss.first_ts / bucket) * bucket;
     long long bend = (ss.last_ts / bucket) * bucket;
+    std::map<long long, long long> produced, firstmap, lastmap;
+    std::map<std::string, const Sample *> prevs;
+    /* 产量 = 每台机床 part_total 正增量求和，增量归到“后一个样本”所在桶；
+       首/末值仅作展示（计数可能清零，不代表产量） */
+    for (const auto &s : ss.rows) {
+        long long b = (s.ts / bucket) * bucket;
+        const Sample *prev = prevs[s.machine];
+        if (prev && prev->part_total >= 0 && s.part_total >= 0 &&
+            s.part_total > prev->part_total)
+            produced[b] += s.part_total - prev->part_total;
+        prevs[s.machine] = &s;
+        if (s.part_total >= 0) {
+            if (!firstmap.count(b)) firstmap[b] = s.part_total;
+            lastmap[b] = s.part_total;
+        }
+    }
     bool first = true;
     for (long long b = bstart; b <= bend; b += bucket) {
-        long long st = -1, en = -1;
-        for (const auto &s : ss.rows) {
-            if (s.ts < b || s.ts >= b + bucket) continue;
-            if (s.part_total < 0) continue;
-            if (st < 0) st = s.part_total;
-            en = s.part_total;
-        }
-        if (st >= 0) {
-            long long prod = (en >= st) ? en - st : 0;
-            if (!first) o += ",";
-            first = false;
-            fmt(o, "{\"bucket_ts\":%lld,\"produced\":%lld,\"start_total\":%lld,\"end_total\":%lld}",
-                b, prod, st, en);
-        }
+        if (!firstmap.count(b)) continue;
+        if (!first) o += ",";
+        first = false;
+        fmt(o, "{\"bucket_ts\":%lld,\"produced\":%lld,\"start_total\":%lld,\"end_total\":%lld}",
+            b, produced[b], firstmap[b], lastmap[b]);
     }
     o += "]}";
     return o;
 }
 
-std::string api_products(const SampleSet &ss, const std::string &machine)
+std::string api_products(const SampleSet &ss, const std::string &label,
+                         const std::string &machine)
 {
     struct Prod {
         std::string comment;
-        long long start_total = -1, end_total = -1, mach_sec = 0, first_ts = 0, last_ts = 0;
+        long long start_total = -1, end_total = -1, produced = 0, mach_sec = 0,
+                  first_ts = 0, last_ts = 0;
         bool have = false;
     };
     std::vector<Prod> list;
 
     for (const auto &s : ss.rows) {
+        if (!machine.empty() && s.machine != machine) continue;
         Prod *cur = nullptr;
         for (auto &p : list) if (p.comment == s.comment) { cur = &p; break; }
         if (!cur && list.size() < 256) {
@@ -336,25 +403,48 @@ std::string api_products(const SampleSet &ss, const std::string &machine)
             if (cur->start_total < 0) cur->start_total = s.part_total;
             cur->end_total = s.part_total;
         }
-        if (is_machining(s)) cur->mach_sec += ss.interval_sec;
         if (!cur->first_ts) cur->first_ts = s.ts;
         cur->last_ts = s.ts;
         cur->have = true;
     }
+    /* 加工时间：相邻样本时间差累加，按前一个样本的产品归组 */
+    std::map<std::string, const Sample *> prevs;
+    for (const auto &s : ss.rows) {
+        if (!machine.empty() && s.machine != machine) continue;
+        const Sample *prev = prevs[s.machine];
+        if (prev) {
+            if (is_machining(*prev) && s.ts > prev->ts &&
+                s.ts - prev->ts <= POWER_GAP_MAX) {
+                for (auto &p : list)
+                    if (p.comment == prev->comment) {
+                        p.mach_sec += s.ts - prev->ts;
+                        break;
+                    }
+            }
+            /* 产量：part_total 正增量求和（计数可能清零，首尾差值会漏算） */
+            if (prev->part_total >= 0 && s.part_total >= 0 &&
+                s.part_total > prev->part_total) {
+                for (auto &p : list)
+                    if (p.comment == prev->comment) {
+                        p.produced += s.part_total - prev->part_total;
+                        break;
+                    }
+                }
+        }
+        prevs[s.machine] = &s;
+    }
 
     std::string o;
-    fmt(o, "{\"machine\":\"%s\",\"items\":[", machine.c_str());
+    fmt(o, "{\"machine\":\"%s\",\"items\":[", label.c_str());
     bool first = true;
     for (const auto &p : list) {
         if (!p.have) continue;
-        long long produced = (p.start_total >= 0 && p.end_total >= p.start_total)
-            ? p.end_total - p.start_total : 0;
         if (!first) o += ",";
         first = false;
         fmt(o,
             "{\"comment\":\"%s\",\"produced\":%lld,\"mach_sec\":%lld,"
             "\"start_total\":%lld,\"end_total\":%lld,\"first_ts\":%lld,\"last_ts\":%lld}",
-            json_escape(p.comment).c_str(), produced, p.mach_sec,
+            json_escape(p.comment).c_str(), p.produced, p.mach_sec,
             p.start_total, p.end_total, p.first_ts, p.last_ts);
     }
     o += "]}";
@@ -553,7 +643,7 @@ void serve_file(Response &r, const std::string &web_root, const std::string &pat
 
 /* ---------- request handling ---------- */
 struct ServerConfig {
-    sqlite3 *db = nullptr;
+    db::Config dbcfg;
     int agent_port = 5000;
     std::string web_root = "web/dist";
 };
@@ -576,17 +666,24 @@ void handle_request(SOCKET c, const ServerConfig &cfg,
         return;
     }
 
+    /* 每个请求独立打开连接：SQLite 以单线程模式编译，多线程共享句柄不安全；
+       迁移到 MySQL 后这里可换成连接池。 */
+    std::string derr;
+    auto dbs = db::open(cfg.dbcfg, &derr);
+    if (!dbs) {
+        r.send_error(500, "db open failed: " + derr);
+        return;
+    }
+
     if (path == "/api/health") {
         long long rows = 0, first = 0, last = 0;
-        sqlite3_stmt *st = nullptr;
-        if (sqlite3_prepare_v2(cfg.db, "SELECT COUNT(*), MIN(ts), MAX(ts) FROM samples;",
-                               -1, &st, nullptr) == SQLITE_OK) {
-            if (sqlite3_step(st) == SQLITE_ROW) {
-                rows = sqlite3_column_int64(st, 0);
-                first = sqlite3_column_int64(st, 1);
-                last = sqlite3_column_int64(st, 2);
+        if (auto st = dbs->prepare(
+                "SELECT COUNT(*), MIN(ts), MAX(ts) FROM samples;")) {
+            if (st->step()) {
+                rows = st->column_int64(0);
+                first = st->column_int64(1);
+                last = st->column_int64(2);
             }
-            sqlite3_finalize(st);
         }
         std::string o;
         fmt(o, "{\"status\":\"ok\",\"server_time\":%lld,\"db_rows\":%lld,"
@@ -598,19 +695,70 @@ void handle_request(SOCKET c, const ServerConfig &cfg,
 
     if (path == "/api/machines") {
         std::string o = "{\"machines\":[";
-        sqlite3_stmt *st = nullptr;
         bool first = true;
-        if (sqlite3_prepare_v2(cfg.db,
-                "SELECT machine, MIN(ts), MAX(ts) FROM samples GROUP BY machine ORDER BY machine;",
-                -1, &st, nullptr) == SQLITE_OK) {
-            while (sqlite3_step(st) == SQLITE_ROW) {
-                const char *m = (const char *)sqlite3_column_text(st, 0);
+        if (auto st = dbs->prepare(
+                "SELECT machine, MIN(ts), MAX(ts) FROM samples "
+                "GROUP BY machine ORDER BY machine;")) {
+            while (st->step()) {
+                std::string m = st->column_text(0);
                 if (!first) o += ",";
                 first = false;
                 fmt(o, "{\"name\":\"%s\",\"first_ts\":%lld,\"last_ts\":%lld}",
-                    m, sqlite3_column_int64(st, 1), sqlite3_column_int64(st, 2));
+                    m.c_str(), st->column_int64(1), st->column_int64(2));
             }
-            sqlite3_finalize(st);
+        }
+        o += "]}";
+        r.send_json(200, o);
+        return;
+    }
+
+    if (path == "/api/alarms/current" || path == "/api/alarms/history") {
+        bool current = (path == "/api/alarms/current");
+        long long from = q.get_ll("from", (long long)time(nullptr) - 86400);
+        long long to = q.get_ll("to", (long long)time(nullptr));
+        std::string machine;
+        if (const std::string *v = q.get("machine")) machine = *v;
+
+        const char *sql;
+        if (current) {
+            sql = "SELECT machine,item_id,item_type,state,first_ts,last_ts,end_ts,active "
+                  "FROM alarms WHERE active=1 ORDER BY last_ts DESC;";
+        } else if (!machine.empty()) {
+            sql = "SELECT machine,item_id,item_type,state,first_ts,last_ts,end_ts,active "
+                  "FROM alarms WHERE last_ts>=?1 AND first_ts<=?2 AND machine=?3 "
+                  "ORDER BY last_ts DESC;";
+        } else {
+            sql = "SELECT machine,item_id,item_type,state,first_ts,last_ts,end_ts,active "
+                  "FROM alarms WHERE last_ts>=?1 AND first_ts<=?2 "
+                  "ORDER BY last_ts DESC;";
+        }
+        auto st = dbs->prepare(sql);
+        if (!st) {
+            r.send_error(500, "db query failed: " + dbs->last_error());
+            return;
+        }
+        if (!current) {
+            st->bind_int64(1, from);
+            st->bind_int64(2, to);
+            if (!machine.empty()) st->bind_text(3, machine);
+        }
+
+        std::string o = "{\"items\":[";
+        bool first = true;
+        while (st->step()) {
+            if (!first) o += ",";
+            first = false;
+            std::string endTs = st->column_is_null(6) ? "null" : std::to_string(st->column_int64(6));
+            fmt(o,
+                "{\"machine\":\"%s\",\"item_id\":\"%s\",\"item_type\":\"%s\","
+                "\"state\":\"%s\",\"first_ts\":%lld,\"last_ts\":%lld,"
+                "\"end_ts\":%s,\"active\":%d}",
+                json_escape(st->column_text(0)).c_str(),
+                json_escape(st->column_text(1)).c_str(),
+                json_escape(st->column_text(2)).c_str(),
+                json_escape(st->column_text(3)).c_str(),
+                st->column_int64(4), st->column_int64(5),
+                endTs.c_str(), st->column_int(7));
         }
         o += "]}";
         r.send_json(200, o);
@@ -623,10 +771,12 @@ void handle_request(SOCKET c, const ServerConfig &cfg,
         int bucket = q.get_int("bucket", 1800);
         std::string machine;
         if (const std::string *v = q.get("machine")) machine = *v;
+        bool all = (machine == "ALL");          /* machine=ALL -> 全厂汇总 */
+        if (all) machine.clear();
         if (bucket < 60) bucket = 60;
 
         SampleSet ss;
-        if (!load_samples(cfg.db, from, to, machine, &ss)) {
+        if (!load_samples(dbs.get(), from, to, machine, &ss)) {
             r.send_error(500, "db query failed");
             return;
         }
@@ -639,11 +789,15 @@ void handle_request(SOCKET c, const ServerConfig &cfg,
         if (path == "/api/stats/summary") {
             out = api_summary(ss);
         } else if (path == "/api/stats/machining") {
-            out = api_machining(ss, bucket, machine.empty() ? ss.rows.front().machine : machine);
+            out = api_machining(ss, bucket,
+                                all ? "ALL" : (machine.empty() ? ss.rows.front().machine : machine));
         } else if (path == "/api/stats/production") {
-            out = api_production(ss, bucket, machine.empty() ? ss.rows.front().machine : machine);
+            out = api_production(ss, bucket,
+                                 all ? "ALL" : (machine.empty() ? ss.rows.front().machine : machine));
         } else if (path == "/api/stats/products") {
-            out = api_products(ss, machine.empty() ? ss.rows.front().machine : machine);
+            out = api_products(ss,
+                               all ? "ALL" : (machine.empty() ? ss.rows.front().machine : machine),
+                               machine);
         } else {
             r.send_error(404, "unknown endpoint");
             return;
@@ -710,13 +864,9 @@ int main(int argc, char *argv[])
     int port = argc > 1 ? atoi(argv[1]) : 8088;
     const char *dbpath = argc > 2 ? argv[2] : "stats.db";
     ServerConfig cfg;
+    cfg.dbcfg.file = argc > 2 ? argv[2] : "stats.db";
     cfg.agent_port = argc > 3 ? atoi(argv[3]) : 5000;
     cfg.web_root = argc > 4 ? argv[4] : "web/dist";
-
-    if (sqlite3_open(dbpath, &cfg.db) != SQLITE_OK) {
-        fprintf(stderr, "cannot open %s: %s\n", dbpath, sqlite3_errmsg(cfg.db));
-        return 1;
-    }
 
     WSADATA wsa;
     WSAStartup(MAKEWORD(2, 2), &wsa);
@@ -755,7 +905,6 @@ int main(int argc, char *argv[])
     }
 
     closesocket(srv);
-    sqlite3_close(cfg.db);
     WSACleanup();
     return 0;
 }

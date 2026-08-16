@@ -13,10 +13,11 @@
  *   mtc_stats.exe poll   [http_port] [interval_sec] [db]
  *   mtc_stats.exe report [db] [bucket_sec] [from_unix] [to_unix]
  *
- * 统计口径（与 webserver / cnc_sampler 一致）：
- *   加工中 = execution==ACTIVE && mode==AUTOMATIC && tmmode==0
- *   产量   = part_total (#6712) 差值
- *   产品   = program comment
+ * 统计口径（与 webserver 一致）：
+ *   加工中   = execution==ACTIVE && mode==AUTOMATIC（自动模式实际运行时间）
+ *   加工时间 = 相邻样本时间差累加（若样本 i 加工中，则累加 ts[i+1]-ts[i]）
+ *   产量     = part_total (#6712) 差值
+ *   产品     = program comment
  */
 
 #ifndef _CRT_SECURE_NO_WARNINGS
@@ -33,10 +34,12 @@
 #include <ctime>
 #include <functional>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
-#include "sqlite3.h"
+#include "db/db.hpp"
+#include "db/stats_db.hpp"
 
 #pragma comment(lib, "winhttp.lib")
 
@@ -65,6 +68,32 @@ long long parse_ll(const char *s)
     char *end = nullptr;
     long long v = _strtoi64(s, &end, 10);
     return (end == s) ? -1 : v;
+}
+
+std::string json_escape(const std::string &in)
+{
+    std::string out;
+    out.reserve(in.size() + 8);
+    for (unsigned char c : in) {
+        switch (c) {
+        case '"':  out += "\\\""; break;
+        case '\\': out += "\\\\"; break;
+        case '\n': out += "\\n";  break;
+        case '\r': out += "\\r";  break;
+        case '\t': out += "\\t";  break;
+        default:
+            if (c < 0x20) out += ' ';
+            else out += (char)c;
+        }
+    }
+    return out;
+}
+
+std::string fmt_dur(long long sec)
+{
+    if (sec < 60) return std::to_string(sec) + "s";
+    if (sec < 3600) return std::to_string(sec / 60) + "m";
+    return std::to_string(sec / 3600) + "h" + std::to_string((sec % 3600) / 60) + "m";
 }
 
 /* 提取 s 中第一个 name="..." 的属性值（用于 DeviceStream 块） */
@@ -128,17 +157,95 @@ struct MachineState {
     std::string execution;
     std::string mode;
     std::string tmmode;
+    std::string avail; /* AVAILABLE / UNAVAILABLE（开关机信号） */
     std::string program;
     std::string comment;
     long long part_total = -1;
     bool seen = false;
+
+    /* 报警条件：item_id -> (item_type, state)
+       state: NORMAL / WARNING / FAULT / FAILED / UNAVAILABLE / ESTOP */
+    struct Cond {
+        std::string type;
+        std::string state;
+    };
+    std::map<std::string, Cond> conds;
 };
 
 using StateMap = std::map<std::string, MachineState>;
 
+/* 相邻样本间隔超过该值视为断联/关机：该时段不计入开机时间与加工时间 */
+static const long long kPowerGapMax = 90;
+
 bool is_machining(const MachineState &s)
 {
-    return s.execution == "ACTIVE" && s.mode == "AUTOMATIC" && s.tmmode == "0";
+    return s.execution == "ACTIVE" && s.mode == "AUTOMATIC";
+}
+
+static bool row_machining(const std::string &execution, const std::string &mode)
+{
+    return execution == "ACTIVE" && mode == "AUTOMATIC";
+}
+
+/* 报警条件是否处于激活状态（NORMAL/UNAVAILABLE 视为无报警） */
+static bool cond_active(const std::string &state)
+{
+    return state == "WARNING" || state == "FAULT" || state == "FAILED" ||
+           state == "ESTOP";
+}
+
+/* 解析 <Condition>...</Condition> 段：<Normal|Warning|Fault|Failed|Unavailable
+   dataItemId="..." type="..."/> 以及 <EmergencyStop>TRIGGERED</EmergencyStop>。
+   增量响应只含变化项，逐项覆盖即可。 */
+static void parse_conditions(const std::string &block, MachineState &st)
+{
+    size_t cs = block.find("<Condition>");
+    if (cs == std::string::npos) cs = block.find("<Condition ");
+    if (cs == std::string::npos) cs = block.find("<Condition/>");
+    if (cs == std::string::npos) cs = block.find("<Condition /");
+    size_t ce = block.find("</Condition>", cs == std::string::npos ? 0 : cs);
+    if (cs == std::string::npos || ce == std::string::npos) return;
+    std::string sec = block.substr(cs, ce - cs);
+
+    static const char *kStates[] = {
+        "Normal", "Warning", "Fault", "Failed", "Unavailable"
+    };
+    for (const char *name : kStates) {
+        std::string open = std::string("<") + name;
+        size_t pos = 0;
+        while ((pos = sec.find(open, pos)) != std::string::npos) {
+            char c = (pos + open.size() < sec.size()) ? sec[pos + open.size()] : '\0';
+            if (c != ' ' && c != '>' && c != '/') {
+                pos += open.size();
+                continue;
+            }
+            size_t gt = sec.find('>', pos);
+            if (gt == std::string::npos) break;
+            std::string itemId = attr_of(sec.substr(pos, gt - pos), "dataItemId");
+            std::string type = attr_of(sec.substr(pos, gt - pos), "type");
+            if (!itemId.empty()) {
+                std::string stName = name;
+                for (auto &ch : stName)
+                    ch = (char)toupper((unsigned char)ch);
+                st.conds[itemId] = { type.empty() ? "FAULT" : type, stName };
+            }
+            pos = gt + 1;
+            std::string close = "</" + std::string(name) + ">";
+            if (sec.compare(pos, close.size(), close) == 0) pos += close.size();
+        }
+    }
+
+    /* 急停：TRIGGERED 视为报警，ARMED/其他视为正常 */
+    {
+        std::string v;
+        if (next_tag_value(block, 0, "EmergencyStop", v, nullptr) != std::string::npos) {
+            std::string s = trim(v);
+            if (s == "TRIGGERED")
+                st.conds["estop"] = { "ESTOP", "ESTOP" };
+            else if (s == "ARMED")
+                st.conds["estop"] = { "ESTOP", "NORMAL" };
+        }
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -209,7 +316,7 @@ private:
         apply("ControllerMode", [](MachineState &m, const std::string &v) { m.mode = v; });
         apply("ProgramComment", [](MachineState &m, const std::string &v) { m.comment = v; });
         apply("Program", [](MachineState &m, const std::string &v) { m.program = v; });
-        apply("Availability", [](MachineState &m, const std::string &v) { (void)m; (void)v; });
+        apply("Availability", [](MachineState &m, const std::string &v) { m.avail = v; });
 
         std::string v;
         long long s = 0;
@@ -221,6 +328,8 @@ private:
             st.tmmode = trim(v);
             if (s > lastSeq_) lastSeq_ = s;
         }
+
+        parse_conditions(block, st);
     }
 
     bool process(StateMap &states)
@@ -356,94 +465,219 @@ private:
 };
 
 /* ------------------------------------------------------------------ */
-/* SQLite                                                              */
+/* 数据库（抽象层：SQLite 现役，预留 MySQL/PostgreSQL）                  */
 /* ------------------------------------------------------------------ */
 
-class Db {
-public:
-    explicit Db(const std::string &path)
-    {
-        if (sqlite3_open(path.c_str(), &db_) != SQLITE_OK) {
-            fprintf(stderr, "[mtc_stats] cannot open db %s: %s\n", path.c_str(),
-                    sqlite3_errmsg(db_));
-            db_ = nullptr;
-            return;
+/* 打开库 + 建表 + 预编译 upsert；失败返回 false 并打印错误 */
+static bool open_db(const std::string &path,
+                    std::unique_ptr<db::Database> &dbs,
+                    std::unique_ptr<db::Statement> &upsert)
+{
+    db::Config cfg;
+    cfg.file = path;
+    std::string err;
+    dbs = db::open(cfg, &err);
+    if (!dbs) {
+        fprintf(stderr, "[mtc_stats] cannot open db %s: %s\n", path.c_str(), err.c_str());
+        return false;
+    }
+    if (!db::ensure_stats_schema(*dbs, &err)) {
+        fprintf(stderr, "[mtc_stats] schema init failed: %s\n", err.c_str());
+        return false;
+    }
+    upsert = db::prepare_sample_upsert(*dbs, &err);
+    if (!upsert) {
+        fprintf(stderr, "[mtc_stats] prepare upsert failed: %s\n", err.c_str());
+        return false;
+    }
+    return true;
+}
+
+/* 批量写入本周期所有机床状态（事务提交） */
+static void flush(db::Database &dbs, db::Statement &ins,
+                  const StateMap &states, long long ts)
+{
+    dbs.begin();
+    for (const auto &kv : states) {
+        const MachineState &s = kv.second;
+        if (!s.seen) continue;
+        ins.bind_int64(1, ts);
+        ins.bind_text(2, s.name);
+        ins.bind_text(3, s.execution);
+        ins.bind_text(4, s.mode);
+        ins.bind_text(5, s.tmmode);
+        ins.bind_text(6, s.program);
+        ins.bind_text(7, s.comment);
+        ins.bind_int64(8, s.part_total);
+        /* power=1 开机在线；UNAVAILABLE 视为关机/断联（power=0） */
+        ins.bind_int(9, s.avail == "UNAVAILABLE" ? 0 : 1);
+        ins.step();
+        ins.reset();
+    }
+    dbs.commit();
+}
+
+/* ------------------------------------------------------------------ */
+/* 报警同步 + webhook 告警                                              */
+/* ------------------------------------------------------------------ */
+
+/* 将当前状态中的条件与 in-memory activeAlarms 对齐：
+   新激活项写库（或刷新 last_ts），已消失/恢复正常项关闭（记 end_ts）。 */
+static void sync_alarms(db::Database &dbs, const StateMap &states,
+                        std::map<std::string, std::set<std::string>> &activeAlarms,
+                        long long now)
+{
+    for (const auto &kv : states) {
+        const MachineState &s = kv.second;
+        auto &set = activeAlarms[s.name];
+        for (const auto &ck : s.conds) {
+            if (cond_active(ck.second.state)) {
+                db::alarm_upsert(dbs, s.name, ck.first, ck.second.type,
+                                 ck.second.state, now);
+                set.insert(ck.first);
+            }
         }
-        sqlite3_exec(db_,
-            "CREATE TABLE IF NOT EXISTS samples("
-            "  ts INTEGER NOT NULL,"
-            "  machine TEXT NOT NULL,"
-            "  execution TEXT, mode TEXT, tmmode TEXT,"
-            "  program TEXT, comment TEXT,"
-            "  part_total INTEGER,"
-            "  PRIMARY KEY(ts, machine));"
-            "CREATE INDEX IF NOT EXISTS idx_samples_machine ON samples(machine, ts);"
-            "CREATE TABLE IF NOT EXISTS stream_state("
-            "  key TEXT PRIMARY KEY, value TEXT);",
-            NULL, NULL, NULL);
-
-        const char *sql =
-            "INSERT OR REPLACE INTO samples(ts,machine,execution,mode,tmmode,"
-            "program,comment,part_total) VALUES(?1,?2,?3,?4,?5,?6,?7,?8);";
-        sqlite3_prepare_v2(db_, sql, -1, &ins_, nullptr);
     }
-    ~Db()
-    {
-        if (ins_) sqlite3_finalize(ins_);
-        if (db_) sqlite3_close(db_);
+    auto sit = states.end();
+    for (auto &mk : activeAlarms) {
+        sit = states.find(mk.first);
+        for (auto it = mk.second.begin(); it != mk.second.end();) {
+            bool stillActive = false;
+            if (sit != states.end()) {
+                auto cit = sit->second.conds.find(*it);
+                stillActive = cit != sit->second.conds.end() &&
+                              cond_active(cit->second.state);
+            }
+            if (stillActive) {
+                ++it;
+            } else {
+                db::alarm_clear(dbs, mk.first, *it, now);
+                it = mk.second.erase(it);
+            }
+        }
     }
-    explicit operator bool() const { return db_ != nullptr; }
-    sqlite3 *handle() { return db_; }
+}
 
-    void flush(const StateMap &states, long long ts)
+/* 启动时恢复未关闭报警，避免进程重启后丢失 first_ts */
+static void seed_active_alarms(
+    db::Database &dbs, std::map<std::string, std::set<std::string>> &activeAlarms)
+{
+    auto st = dbs.prepare("SELECT machine, item_id FROM alarms WHERE active=1;");
+    if (!st) return;
+    while (st->step())
+        activeAlarms[st->column_text(0)].insert(st->column_text(1));
+}
+
+/* 通用 webhook 通知：POST {"text": "..."} 到 http(s)://host[:port]/path */
+class Notifier {
+public:
+    std::string url;
+    long long everySec = 3600; /* 持续异常时重新告警的间隔 */
+
+    bool enabled() const { return !url.empty(); }
+
+    bool send(const std::string &text) const
     {
-        if (!ins_) return;
-        sqlite3_exec(db_, "BEGIN;", NULL, NULL, NULL);
+        if (url.empty()) return false;
+
+        bool secure = false;
+        std::string rest = url;
+        if (rest.compare(0, 8, "https://") == 0) { secure = true; rest = rest.substr(8); }
+        else if (rest.compare(0, 7, "http://") == 0) rest = rest.substr(7);
+        else return false;
+
+        size_t slash = rest.find('/');
+        std::string host = slash == std::string::npos ? rest : rest.substr(0, slash);
+        std::string path = slash == std::string::npos ? "/" : rest.substr(slash);
+        INTERNET_PORT port = secure ? 443 : 80;
+        size_t colon = host.rfind(':');
+        if (colon != std::string::npos) {
+            port = (INTERNET_PORT)atoi(host.substr(colon + 1).c_str());
+            host = host.substr(0, colon);
+        }
+
+        HINTERNET hSession = WinHttpOpen(L"mtc-stats-alert/1.0",
+                                         WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                                         WINHTTP_NO_PROXY_NAME,
+                                         WINHTTP_NO_PROXY_BYPASS, 0);
+        if (!hSession) return false;
+        bool ok = false;
+        wchar_t whost[256];
+        MultiByteToWideChar(CP_UTF8, 0, host.c_str(), -1, whost, 256);
+        HINTERNET hConn = WinHttpConnect(hSession, whost, port, 0);
+        if (hConn) {
+            wchar_t wpath[1024];
+            MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, wpath, 1024);
+            HINTERNET hReq = WinHttpOpenRequest(hConn, L"POST", wpath, NULL,
+                                                WINHTTP_NO_REFERER,
+                                                WINHTTP_DEFAULT_ACCEPT_TYPES,
+                                                secure ? WINHTTP_FLAG_SECURE : 0);
+            if (hReq) {
+                if (secure) {
+                    DWORD flags = SECURITY_FLAG_IGNORE_UNKNOWN_CA |
+                                  SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
+                                  SECURITY_FLAG_IGNORE_CERT_CN_INVALID |
+                                  SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
+                    WinHttpSetOption(hReq, WINHTTP_OPTION_SECURITY_FLAGS,
+                                     &flags, sizeof(flags));
+                }
+                std::string body = "{\"text\":\"" + json_escape(text) + "\"}";
+                LPCWSTR headers = L"Content-Type: application/json\r\n";
+                if (WinHttpSendRequest(hReq, headers, -1L,
+                                       (LPVOID)body.c_str(), (DWORD)body.size(),
+                                       (DWORD)body.size(), 0))
+                    ok = WinHttpReceiveResponse(hReq, NULL);
+                WinHttpCloseHandle(hReq);
+            }
+            WinHttpCloseHandle(hConn);
+        }
+        WinHttpCloseHandle(hSession);
+        return ok;
+    }
+};
+
+/* 机床离线 / 采集断链检测与通知（只在 Notifier 启用时工作） */
+struct AlertTracker {
+    std::map<std::string, long long> offlineSince;
+    std::map<std::string, long long> lastOfflineAlert;
+    bool lastReqOk = true;
+    long long lastReqFailAlert = 0;
+
+    void check(const Notifier &n, long long now, const StateMap &states, bool reqOk)
+    {
+        if (!n.enabled()) return;
         for (const auto &kv : states) {
             const MachineState &s = kv.second;
-            if (!s.seen) continue;
-            sqlite3_bind_int64(ins_, 1, ts);
-            sqlite3_bind_text(ins_, 2, s.name.c_str(), -1, SQLITE_STATIC);
-            sqlite3_bind_text(ins_, 3, s.execution.c_str(), -1, SQLITE_STATIC);
-            sqlite3_bind_text(ins_, 4, s.mode.c_str(), -1, SQLITE_STATIC);
-            sqlite3_bind_text(ins_, 5, s.tmmode.c_str(), -1, SQLITE_STATIC);
-            sqlite3_bind_text(ins_, 6, s.program.c_str(), -1, SQLITE_STATIC);
-            sqlite3_bind_text(ins_, 7, s.comment.c_str(), -1, SQLITE_STATIC);
-            sqlite3_bind_int64(ins_, 8, s.part_total);
-            sqlite3_step(ins_);
-            sqlite3_reset(ins_);
-            sqlite3_clear_bindings(ins_);
+            bool off = s.avail == "UNAVAILABLE" || s.execution == "UNAVAILABLE";
+            if (off) {
+                auto it = offlineSince.find(s.name);
+                if (it == offlineSince.end()) {
+                    offlineSince[s.name] = now;
+                    lastOfflineAlert[s.name] = now;
+                    n.send(s.name + " 离线（" + s.execution + "/" + s.avail + "）");
+                } else if (now - lastOfflineAlert[s.name] >= n.everySec) {
+                    lastOfflineAlert[s.name] = now;
+                    n.send(s.name + " 仍离线（已持续 " +
+                           fmt_dur(now - it->second) + "）");
+                }
+            } else {
+                auto it = offlineSince.find(s.name);
+                if (it != offlineSince.end()) {
+                    n.send(s.name + " 恢复在线");
+                    offlineSince.erase(it);
+                    lastOfflineAlert.erase(s.name);
+                }
+            }
         }
-        sqlite3_exec(db_, "COMMIT;", NULL, NULL, NULL);
+        if (reqOk) {
+            if (!lastReqOk) n.send("采集服务恢复（agent 可达）");
+            lastReqOk = true;
+        } else if (lastReqOk || now - lastReqFailAlert >= n.everySec) {
+            lastReqOk = false;
+            lastReqFailAlert = now;
+            n.send("采集服务不可达（agent 连接失败）");
+        }
     }
-
-    std::string get_state(const char *key)
-    {
-        std::string v;
-        sqlite3_stmt *st = nullptr;
-        const char *sql = "SELECT value FROM stream_state WHERE key=?1;";
-        if (sqlite3_prepare_v2(db_, sql, -1, &st, nullptr) != SQLITE_OK) return v;
-        sqlite3_bind_text(st, 1, key, -1, SQLITE_STATIC);
-        if (sqlite3_step(st) == SQLITE_ROW)
-            if (auto *p = sqlite3_column_text(st, 0)) v = (const char *)p;
-        sqlite3_finalize(st);
-        return v;
-    }
-
-    void set_state(const char *key, const std::string &v)
-    {
-        sqlite3_stmt *st = nullptr;
-        const char *sql = "INSERT OR REPLACE INTO stream_state(key,value) VALUES(?1,?2);";
-        if (sqlite3_prepare_v2(db_, sql, -1, &st, nullptr) != SQLITE_OK) return;
-        sqlite3_bind_text(st, 1, key, -1, SQLITE_STATIC);
-        sqlite3_bind_text(st, 2, v.c_str(), -1, SQLITE_STATIC);
-        sqlite3_step(st);
-        sqlite3_finalize(st);
-    }
-
-private:
-    sqlite3 *db_ = nullptr;
-    sqlite3_stmt *ins_ = nullptr;
 };
 
 /* ------------------------------------------------------------------ */
@@ -451,7 +685,8 @@ private:
 /* ------------------------------------------------------------------ */
 
 /* 拉取 /current 全量快照作为基线：重建状态、更新序列号与 instanceId */
-bool snapshot(Http &http, Db &db, int port, StateMap &states,
+bool snapshot(Http &http, db::Database &dbs, db::Statement &upsert,
+              int port, StateMap &states,
               long long &seq, long long &instanceId)
 {
     std::string doc;
@@ -465,35 +700,51 @@ bool snapshot(Http &http, Db &db, int port, StateMap &states,
     states = std::move(fresh);
     seq = ns;
     if (ii) instanceId = ii;
-    db.set_state("seq", std::to_string(seq));
-    db.set_state("instance_id", std::to_string(instanceId));
-    db.flush(states, (long long)time(nullptr));
+    db::set_state(dbs, "seq", std::to_string(seq));
+    db::set_state(dbs, "instance_id", std::to_string(instanceId));
+    flush(dbs, upsert, states, (long long)time(nullptr));
     printf("[%lld] snapshot: %zu machines, next_seq=%lld\n",
            (long long)time(nullptr), states.size(), seq);
     return true;
 }
 
-int cmd_stream(int port, const std::string &dbpath, int intervalMs)
+int cmd_stream(int port, const std::string &dbpath, int intervalMs, int pruneDays,
+               const std::string &alertUrl, int alertMin)
 {
-    Db db(dbpath);
-    if (!db) return 1;
+    std::unique_ptr<db::Database> dbs;
+    std::unique_ptr<db::Statement> upsert;
+    if (!open_db(dbpath, dbs, upsert)) return 1;
     Http http;
     if (!http) { fprintf(stderr, "[mtc_stats] WinHttpOpen failed\n"); return 1; }
 
-    long long seq = parse_ll(db.get_state("seq").c_str());
-    long long instanceId = parse_ll(db.get_state("instance_id").c_str());
+    long long seq = parse_ll(db::get_state(*dbs, "seq").c_str());
+    long long instanceId = parse_ll(db::get_state(*dbs, "instance_id").c_str());
     StateMap states;
+    std::map<std::string, std::set<std::string>> activeAlarms;
+    seed_active_alarms(*dbs, activeAlarms);
+    Notifier notifier;
+    notifier.url = alertUrl;
+    notifier.everySec = alertMin > 0 ? (long long)alertMin * 60 : 3600;
+    AlertTracker alerts;
 
     /* 启动时总是先拉一次 /current 快照：重建所有机床基线（含长时间不发事件的
        空闲机床），并用当前 nextSequence 作为增量起点。 */
-    if (!snapshot(http, db, port, states, seq, instanceId)) {
+    if (!snapshot(http, *dbs, *upsert, port, states, seq, instanceId)) {
         fprintf(stderr, "[mtc_stats] agent not reachable at 127.0.0.1:%d\n", port);
         return 1;
     }
+    sync_alarms(*dbs, states, activeAlarms, (long long)time(nullptr));
 
     printf("[mtc_stats] streaming /sample?from=%lld count=%d interval=%dms -> %s\n",
            seq, kSampleCount, intervalMs, dbpath.c_str());
+    if (pruneDays > 0)
+        printf("[mtc_stats] retention: prune samples older than %d days (hourly)\n",
+               pruneDays);
+    if (notifier.enabled())
+        printf("[mtc_stats] alert webhook: %s (re-alert every %lld min)\n",
+               notifier.url.c_str(), notifier.everySec / 60);
 
+    long long lastPrune = 0;
     for (;;) {
         char path[256];
         snprintf(path, sizeof(path), "/sample?from=%lld&count=%d&frequency=1",
@@ -514,12 +765,31 @@ int cmd_stream(int port, const std::string &dbpath, int intervalMs)
         /* 处理错误 / agent 重启：重新快照 */
         if (!ok) {
             printf("[%lld] sample request failed, re-snapshotting\n", now);
-            if (!snapshot(http, db, port, states, seq, instanceId))
+            if (!snapshot(http, *dbs, *upsert, port, states, seq, instanceId))
                 printf("[%lld] agent not reachable, retrying in %dms\n", now, intervalMs);
+            alerts.check(notifier, now, states, false);
         } else {
-            db.set_state("seq", std::to_string(seq));
-            db.flush(states, now);
+            db::set_state(*dbs, "seq", std::to_string(seq));
+            flush(*dbs, *upsert, states, now);
+            sync_alarms(*dbs, states, activeAlarms, now);
+            alerts.check(notifier, now, states, true);
             printf("[%lld] stream seq=%lld machines=%zu\n", now, seq, states.size());
+
+            /* 保留策略：每小时清理一次过期采样 */
+            if (pruneDays > 0 && now - lastPrune >= 3600) {
+                long long cutoff = now - (long long)pruneDays * 86400;
+                std::string perr;
+                long long removed = db::prune_samples(*dbs, cutoff, &perr);
+                if (removed >= 0)
+                    printf("[%lld] pruned %lld rows older than %dd\n",
+                           now, removed, pruneDays);
+                else
+                    printf("[%lld] prune failed: %s\n", now, perr.c_str());
+                long long arem = db::prune_alarms(*dbs, cutoff, &perr);
+                if (arem >= 0 && arem > 0)
+                    printf("[%lld] pruned %lld closed alarms\n", now, arem);
+                lastPrune = now;
+            }
         }
 
         Sleep(intervalMs < 200 ? 200 : (DWORD)intervalMs);
@@ -529,10 +799,13 @@ int cmd_stream(int port, const std::string &dbpath, int intervalMs)
 
 int cmd_poll(int port, int intervalSec, const std::string &dbpath)
 {
-    Db db(dbpath);
-    if (!db) return 1;
+    std::unique_ptr<db::Database> dbs;
+    std::unique_ptr<db::Statement> upsert;
+    if (!open_db(dbpath, dbs, upsert)) return 1;
     Http http;
     if (!http) { fprintf(stderr, "[mtc_stats] WinHttpOpen failed\n"); return 1; }
+    std::map<std::string, std::set<std::string>> activeAlarms;
+    seed_active_alarms(*dbs, activeAlarms);
 
     printf("[mtc_stats] polling http://127.0.0.1:%d/current every %ds -> %s\n",
            port, intervalSec, dbpath.c_str());
@@ -542,7 +815,8 @@ int cmd_poll(int port, int intervalSec, const std::string &dbpath)
             StateMap states;
             parse_document(doc, states);
             long long now = (long long)time(nullptr);
-            db.flush(states, now);
+            flush(*dbs, *upsert, states, now);
+            sync_alarms(*dbs, states, activeAlarms, now);
             printf("[%lld] captured %zu machines\n", now, states.size());
         } else {
             printf("[mtc_stats] agent not reachable, retrying in %ds\n", intervalSec);
@@ -565,6 +839,7 @@ struct SampleRow {
     std::string program;
     std::string comment;
     long long part_total = -1;
+    int power = -1; /* 1=开机在线, 0=关机/断联, -1=旧数据无记录(视为开机) */
 };
 
 struct ProductStat {
@@ -572,6 +847,7 @@ struct ProductStat {
     std::string comment;
     long long start_total = -1;
     long long end_total = -1;
+    long long produced = 0;
 };
 
 std::vector<std::string> collect_machines(const std::vector<SampleRow> &rows)
@@ -588,34 +864,35 @@ std::vector<std::string> collect_machines(const std::vector<SampleRow> &rows)
 
 int cmd_report(const std::string &dbpath, int bucketSec, long long from, long long to)
 {
-    Db db(dbpath);
-    if (!db) return 1;
+    std::unique_ptr<db::Database> dbs;
+    std::unique_ptr<db::Statement> upsert; /* 建表用，report 不使用 */
+    if (!open_db(dbpath, dbs, upsert)) return 1;
 
-    sqlite3_stmt *st = nullptr;
     const char *sql =
-        "SELECT ts,machine,execution,mode,tmmode,program,comment,part_total "
+        "SELECT ts,machine,execution,mode,tmmode,program,comment,part_total,power "
         "FROM samples WHERE ts>=?1 AND ts<=?2 ORDER BY machine, ts;";
-    if (sqlite3_prepare_v2(db.handle(), sql, -1, &st, nullptr) != SQLITE_OK) {
-        fprintf(stderr, "[mtc_stats] prepare failed: %s\n", sqlite3_errmsg(db.handle()));
+    auto st = dbs->prepare(sql);
+    if (!st) {
+        fprintf(stderr, "[mtc_stats] prepare failed: %s\n", dbs->last_error().c_str());
         return 1;
     }
-    sqlite3_bind_int64(st, 1, from);
-    sqlite3_bind_int64(st, 2, to);
+    st->bind_int64(1, from);
+    st->bind_int64(2, to);
 
     std::vector<SampleRow> rows;
-    while (sqlite3_step(st) == SQLITE_ROW) {
+    while (st->step()) {
         SampleRow r;
-        r.ts = sqlite3_column_int64(st, 0);
-        if (auto *p = sqlite3_column_text(st, 1)) r.machine = (const char *)p;
-        if (auto *p = sqlite3_column_text(st, 2)) r.execution = (const char *)p;
-        if (auto *p = sqlite3_column_text(st, 3)) r.mode = (const char *)p;
-        if (auto *p = sqlite3_column_text(st, 4)) r.tmmode = (const char *)p;
-        if (auto *p = sqlite3_column_text(st, 5)) r.program = (const char *)p;
-        if (auto *p = sqlite3_column_text(st, 6)) r.comment = (const char *)p;
-        r.part_total = sqlite3_column_int64(st, 7);
+        r.ts = st->column_int64(0);
+        r.machine = st->column_text(1);
+        r.execution = st->column_text(2);
+        r.mode = st->column_text(3);
+        r.tmmode = st->column_text(4);
+        r.program = st->column_text(5);
+        r.comment = st->column_text(6);
+        r.part_total = st->column_int64(7);
+        r.power = st->column_is_null(8) ? -1 : st->column_int(8);
         rows.push_back(std::move(r));
     }
-    sqlite3_finalize(st);
 
     if (rows.empty()) {
         printf("[mtc_stats] no samples in range. Run 'mtc_stats stream/poll' first.\n");
@@ -633,46 +910,74 @@ int cmd_report(const std::string &dbpath, int bucketSec, long long from, long lo
     }
     printf("\n=== 加工统计  %s ~ %s  (bucket=%ds) ===\n", fbuf, tbuf, bucketSec);
 
-    /* (1) per-machine running time, bucketed */
-    printf("\n[1] 机床实际运行时间 (ACTIVE + AUTOMATIC + tmmode=0, MachSec = count x interval)\n");
-    printf("    %-7s %-16s %-10s\n", "Machine", "BucketStart", "MachSec");
+    /* (1) per-machine running time, bucketed (相邻样本时间差累加) */
+    printf("\n[1] 机床运行统计 (加工时间/开机时间/利用率, 相邻样本时间差累加)\n");
+    printf("    %-7s %-16s %-10s %-10s %-8s %-10s\n",
+           "Machine", "BucketStart", "MachSec", "PowerSec", "Util", "MachCnt");
     auto machines = collect_machines(rows);
-    for (long long b = from / bucketSec * bucketSec; b <= to / bucketSec * bucketSec;
-         b += bucketSec) {
-        char bts[32];
-        time_t bt = (time_t)b;
-        struct tm bt2;
-        localtime_s(&bt2, &bt);
-        strftime(bts, sizeof(bts), "%m-%d %H:%M", &bt2);
-        for (const auto &m : machines) {
-            long long cnt = 0;
-            for (const auto &r : rows) {
-                if (r.machine != m) continue;
-                if (r.ts < b || r.ts >= b + bucketSec) continue;
-                MachineState ms;
-                ms.execution = r.execution;
-                ms.mode = r.mode;
-                ms.tmmode = r.tmmode;
-                if (is_machining(ms)) cnt++;
+    for (const auto &m : machines) {
+        std::map<long long, long long> bucket_secs;
+        std::map<long long, long long> bucket_power;
+        std::map<long long, long long> bucket_cnt;
+        const SampleRow *prev = nullptr;
+        bool prev_mach = false;
+        bool prev_power = false;
+        for (const auto &r : rows) {
+            if (r.machine != m) continue;
+            bool pow = r.power != 0; /* NULL/旧数据视为开机 */
+            bool mach = pow && row_machining(r.execution, r.mode);
+            if (mach) {
+                long long b = (r.ts / bucketSec) * bucketSec;
+                bucket_cnt[b]++;
             }
-            if (cnt > 0)
-                printf("    %-7s %-16s %-10lld\n", m.c_str(), bts, cnt);
+            if (prev && r.ts > prev->ts && r.ts - prev->ts <= kPowerGapMax) {
+                long long t0 = prev->ts, t1 = r.ts;
+                for (long long b = (t0 / bucketSec) * bucketSec; b < t1; b += bucketSec) {
+                    long long lo = b > t0 ? b : t0;
+                    long long hi = (b + bucketSec < t1) ? b + bucketSec : t1;
+                    if (hi <= lo) continue;
+                    if (prev_mach) bucket_secs[b] += hi - lo;
+                    if (prev_power) bucket_power[b] += hi - lo;
+                }
+            }
+            prev = &r;
+            prev_mach = mach;
+            prev_power = pow;
+        }
+        for (const auto &kv : bucket_secs) {
+            if (kv.second <= 0 && bucket_power[kv.first] <= 0) continue;
+            char bts[32];
+            time_t bt = (time_t)kv.first;
+            struct tm bt2;
+            localtime_s(&bt2, &bt);
+            strftime(bts, sizeof(bts), "%m-%d %H:%M", &bt2);
+            long long pw = bucket_power[kv.first];
+            printf("    %-7s %-16s %-10lld %-10lld %6d%% %-10lld\n",
+                   m.c_str(), bts, kv.second, pw,
+                   pw > 0 ? (int)(kv.second * 100 / pw) : 0,
+                   bucket_cnt[kv.first]);
         }
     }
 
-    /* (2) per-machine produced parts in range (part_total delta) */
-    printf("\n[2] 时间段内产量 (part_total #6712 差值)\n");
+    /* (2) per-machine produced parts in range (part_total 正增量求和,
+           兼容计数清零/重启) */
+    printf("\n[2] 时间段内产量 (part_total 正增量求和)\n");
     printf("    %-7s %-14s %-14s %-10s\n", "Machine", "StartTotal", "EndTotal", "Produced");
     for (const auto &m : machines) {
-        long long first = -1, last = -1;
+        long long first = -1, last = -1, produced = 0;
+        const SampleRow *prev = nullptr;
         for (const auto &r : rows) {
-            if (r.machine != m || r.part_total < 0) continue;
+            if (r.machine != m) continue;
+            if (r.part_total < 0) continue;
             if (first < 0) first = r.part_total;
             last = r.part_total;
+            if (prev && prev->part_total >= 0 && r.part_total > prev->part_total)
+                produced += r.part_total - prev->part_total;
+            prev = &r;
         }
-        if (first >= 0 && last >= first)
+        if (first >= 0)
             printf("    %-7s %-14lld %-14lld %-10lld\n",
-                   m.c_str(), first, last, last - first);
+                   m.c_str(), first, last, produced);
     }
 
     /* (3) per-machine per-product parts */
@@ -681,6 +986,7 @@ int cmd_report(const std::string &dbpath, int bucketSec, long long from, long lo
     for (const auto &m : machines) {
         std::vector<ProductStat> ps;
         std::string prevComment;
+        const SampleRow *prev = nullptr;
         ProductStat *cur = nullptr;
         for (const auto &r : rows) {
             if (r.machine != m || r.part_total < 0) continue;
@@ -695,16 +1001,38 @@ int cmd_report(const std::string &dbpath, int bucketSec, long long from, long lo
             if (!cur) continue;
             if (cur->start_total < 0) cur->start_total = r.part_total;
             cur->end_total = r.part_total;
+            if (prev && prev->part_total >= 0 && r.part_total > prev->part_total)
+                cur->produced += r.part_total - prev->part_total;
+            prev = &r;
         }
         for (const auto &p : ps) {
-            long long produced =
-                (p.end_total >= p.start_total && p.start_total >= 0)
-                    ? p.end_total - p.start_total : 0;
-            if (!p.comment.empty() && produced > 0)
+            if (!p.comment.empty() && p.produced > 0)
                 printf("    %-7s %-22s %-12lld\n",
-                       m.c_str(), p.comment.c_str(), produced);
+                       m.c_str(), p.comment.c_str(), p.produced);
         }
     }
+    return 0;
+}
+
+/* 保留策略：删除 db 中早于 retention_days 的采样 */
+int cmd_prune(const std::string &dbpath, long long retentionDays)
+{
+    std::unique_ptr<db::Database> dbs;
+    std::unique_ptr<db::Statement> upsert;
+    if (!open_db(dbpath, dbs, upsert)) return 1;
+
+    long long now = (long long)time(nullptr);
+    long long cutoff = now - retentionDays * 86400;
+    std::string err;
+    long long removed = db::prune_samples(*dbs, cutoff, &err);
+    if (removed < 0) {
+        fprintf(stderr, "[mtc_stats] prune failed: %s\n", err.c_str());
+        return 1;
+    }
+    printf("[mtc_stats] pruned %lld rows older than %lld days\n", removed, retentionDays);
+    long long arem = db::prune_alarms(*dbs, cutoff, &err);
+    if (arem >= 0)
+        printf("[mtc_stats] pruned %lld closed alarms\n", arem);
     return 0;
 }
 
@@ -720,13 +1048,17 @@ int main(int argc, char *argv[])
     setvbuf(stdout, NULL, _IONBF, 0); /* 重定向到文件时日志也能及时落盘 */
     if (argc < 2) {
         printf("Usage:\n");
-        printf("  %s stream [http_port] [db] [interval_ms]\n", argv[0]);
-        printf("      incremental stream from agent /sample (default port 5000, stats.db, 5000ms)\n");
+        printf("  %s stream [http_port] [db] [interval_ms] [prune_days] [alert_url] [alert_min]\n", argv[0]);
+        printf("      incremental stream from agent /sample\n");
+        printf("      (default port 5000, stats.db, 5000ms; prune_days>0 每小时清理过期数据;\n");
+        printf("       alert_url 非空时按 webhook 通知机床离线/采集中断, alert_min 为重复告警间隔)\n");
         printf("  %s poll [http_port] [interval_sec] [db]\n", argv[0]);
         printf("      poll /current snapshot (default port 5000, 5s, stats.db)\n");
         printf("  %s report [db] [bucket_sec] [from_unix] [to_unix]\n", argv[0]);
         printf("      running time / produced parts / per-product parts\n");
         printf("      (default last 24h, 30min buckets)\n");
+        printf("  %s prune [db] [retention_days]\n", argv[0]);
+        printf("      delete samples older than retention_days (default stats.db, 90d)\n");
         return 1;
     }
 
@@ -734,7 +1066,11 @@ int main(int argc, char *argv[])
         int port = argc > 2 ? atoi(argv[2]) : kDefaultPort;
         std::string db = argc > 3 ? argv[3] : "stats.db";
         int intervalMs = argc > 4 ? atoi(argv[4]) : kDefaultIntervalMs;
-        return cmd_stream(port, db, intervalMs);
+        int pruneDays = argc > 5 ? atoi(argv[5]) : 0;
+        std::string alertUrl = argc > 6 ? argv[6] : "";
+        if (alertUrl == "-") alertUrl.clear();
+        int alertMin = argc > 7 ? atoi(argv[7]) : 60;
+        return cmd_stream(port, db, intervalMs, pruneDays, alertUrl, alertMin);
     }
 
     if (strcmp(argv[1], "poll") == 0) {
@@ -757,6 +1093,12 @@ int main(int argc, char *argv[])
             from = to - 24 * 3600;
         }
         return cmd_report(db, bucket, from, to);
+    }
+
+    if (strcmp(argv[1], "prune") == 0) {
+        std::string db = argc > 2 ? argv[2] : "stats.db";
+        long long days = argc > 3 ? _atoi64(argv[3]) : 90;
+        return cmd_prune(db, days);
     }
 
     printf("unknown command '%s'\n", argv[1]);

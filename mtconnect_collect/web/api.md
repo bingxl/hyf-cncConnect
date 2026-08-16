@@ -1,7 +1,8 @@
 # MTConnect 数据报表 Web API
 
-服务端：`webserver.exe`（C / winsock + SQLite），默认端口 **8088**，数据源 `stats.db`（由
-`mtc_stats poll` 持续写入）。生产环境同时托管前端构建产物（`web/dist/`）。
+服务端：`webserver.exe`（C++ / winsock + SQLite），默认端口 **8088**，数据源 `stats.db`
+（由 `mtc_stats stream`（增量）或 `poll`（快照）持续写入）。生产环境同时托管前端构建产物
+（`web/dist/`）。
 
 **通用约定**
 
@@ -12,9 +13,15 @@
 - 响应均为 `application/json; charset=utf-8`，含 `Access-Control-Allow-Origin: *`（开发跨域）。
 - 错误返回：`{"error": "<message>"}`，HTTP 400/404/500。
 - 统计口径：
-  - **加工中**：`execution=ACTIVE && mode=AUTOMATIC && tmmode=0`（FANUC；Mazak 无 tmmode 则按前两项）
-  - **加工时间(秒)**：加工中采样点数 × 采样间隔（当前 poller 为 10s）
-  - **产量**：`part_total`（FANUC 参数 #6712 / 采集器映射）差值，负值钳为 0
+  - **加工中**：`execution=ACTIVE && mode=AUTOMATIC`（自动模式实际运行时间；`tmmode`
+    仅作展示字段，不再硬性过滤，避免车铣复合 M 模式漏计；Mazak 无 tmmode 同样计入）
+  - **加工时间(秒)**：相邻样本时间差累加（若样本 i 加工中，则累加 `ts[i+1]-ts[i]`，
+    跨桶按桶边界拆分），对缺行/间隔不均比“样本数×平均间隔”稳健
+  - **开机时间(秒)**：相邻样本时间差累加，样本 i 开机（`Availability=AVAILABLE`）则累加
+    `ts[i+1]-ts[i]`；关机/断联（`UNAVAILABLE`）样本与超过 90s 的采样间隔不计入
+  - **利用率**：`加工时间 / 开机时间`（开机时间为 0 时利用率为 0）
+- **产量**：`part_total` **正增量求和**（相邻样本 `part_total` 上升则累加差值），
+  兼容计数清零/重启（批次结束、断电、sim 重启等）；首尾差值会漏算
   - **产品**：按程序注释 `comment` 分组
 
 ---
@@ -94,8 +101,8 @@ GET /api/stats/summary?from=1784060800&to=1784095200
     {
       "machine": "ZXJ03",
       "mach_sec": 61200,
-      "total_time_sec": 34400,
-      "util_rate": 0.82,
+      "power_sec": 72000,
+      "util_rate": 0.85,
       "part_total_start": 332401,
       "part_total_end": 333055,
       "produced": 654,
@@ -111,9 +118,9 @@ GET /api/stats/summary?from=1784060800&to=1784095200
 |------|------|------|
 | interval_sec | int | 实际采样间隔（= (last-first)/(count-1) 取整） |
 | mach_sec | int | 加工时间（秒） |
-| total_time_sec | int | 有采样覆盖的时长（秒） |
-| util_rate | float | 利用率 = mach_sec / total_time_sec（无数据为 0） |
-| produced | int | 时间段内产量（part_total 末值 - 首值，钳 0） |
+| power_sec | int | 开机时间（秒，关机/断联时段不计入） |
+| util_rate | float | 利用率 = mach_sec / power_sec（开机时间为 0 则为 0） |
+| produced | int | 时间段内产量（part_total 正增量求和） |
 | last | object | 最新一条采样状态（实时快照） |
 
 ---
@@ -126,7 +133,7 @@ GET /api/stats/machining?from=&to=&machine=ZXJ03&bucket=1800
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| machine | string | 是 | 机床名 |
+| machine | string | 是 | 机床名；传 `ALL` 返回全厂各桶合计 |
 | bucket | int | 否 | 分桶秒数，默认 1800 |
 
 **响应**
@@ -137,7 +144,8 @@ GET /api/stats/machining?from=&to=&machine=ZXJ03&bucket=1800
   "bucket": 1800,
   "interval_sec": 10,
   "points": [
-    { "bucket_ts": 1784070000, "mach_sec": 1780, "machining_count": 178, "sample_count": 180 }
+    { "bucket_ts": 1784070000, "mach_sec": 1780, "power_sec": 1800,
+      "machining_count": 178, "sample_count": 180 }
   ]
 }
 ```
@@ -146,6 +154,7 @@ GET /api/stats/machining?from=&to=&machine=ZXJ03&bucket=1800
 |------|------|
 | bucket_ts | 桶起始 Unix 秒（对齐：`ts/bucket*bucket`） |
 | mach_sec | 桶内加工秒数 |
+| power_sec | 桶内开机秒数（关机/断联不计入） |
 | machining_count / sample_count | 桶内加工中采样数 / 总采样数 |
 
 ## 5. 产量序列（分桶）
@@ -156,7 +165,7 @@ GET /api/stats/production?from=&to=&machine=ZXJ03&bucket=1800
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| machine | string | 是 | 机床名 |
+| machine | string | 是 | 机床名；传 `ALL` 返回全厂各桶合计 |
 | bucket | int | 否 | 分桶秒数，默认 1800 |
 
 **响应**
@@ -173,7 +182,7 @@ GET /api/stats/production?from=&to=&machine=ZXJ03&bucket=1800
 
 | 字段 | 说明 |
 |------|------|
-| produced | 桶内产量（桶内 part_total 首末差值，钳 0） |
+| produced | 桶内产量（part_total 正增量求和，按机床分别累计） |
 | start_total / end_total | 桶内首/末累计件数 |
 
 ---
@@ -186,7 +195,7 @@ GET /api/stats/products?from=&to=&machine=ZXJ03
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| machine | string | 是 | 机床名 |
+| machine | string | 是 | 机床名；传 `ALL` 时按全厂汇总（产品表通常按单机查看） |
 
 **响应**
 
@@ -253,3 +262,48 @@ GET /{path}              → web/dist/{path}（SPA 回退 index.html）
 ```
 
 前端构建产物放入 `web/dist/`，服务端自动托管；开发模式前端走 vite dev（`web/vite.config.ts` 配置 proxy `/api` → `:8088`）。
+
+---
+
+## 9. 报警查询（conditions / 急停）
+
+报警由 `mtc_stats stream/poll` 从 agent 的条件（`<Fault>/<Warning>/<Failed>`）与
+急停信号采集入库（`alarms` 表，每条 occurrence 以 machine+item_id+first_ts 唯一）。
+
+```
+GET /api/alarms/current
+```
+
+返回当前未恢复的报警：
+
+```json
+{
+  "items": [
+    {
+      "machine": "ZXJ03",
+      "item_id": "spindle",
+      "item_type": "FAULT",
+      "state": "FAULT",
+      "first_ts": 1784095000,
+      "last_ts": 1784095200,
+      "end_ts": null,
+      "active": 1
+    }
+  ]
+}
+```
+
+```
+GET /api/alarms/history?from=&to=&machine=
+```
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| from / to | int | 否 | Unix 秒，默认最近 24h |
+| machine | string | 否 | 机床名，省略为全部 |
+
+返回与 /current 相同结构的列表（含已恢复报警，`end_ts` 非空、`active=0`）。
+
+> 通知：`mtc_stats stream` 第 6/7 个参数为 `alert_url`（http(s) webhook，POST
+> `{"text":"..."}`，兼容钉钉/企业微信机器人格式）和 `alert_min`（持续异常重复告警
+> 间隔，默认 60 分钟）。触发场景：机床离线/恢复、采集服务（agent）断链/恢复。

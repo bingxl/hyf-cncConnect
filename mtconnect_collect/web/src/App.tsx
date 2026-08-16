@@ -4,14 +4,16 @@ import {
   DashboardOutlined,
   BarChartOutlined,
   MonitorOutlined,
+  WarningOutlined,
 } from '@ant-design/icons'
 import Dashboard from './pages/Dashboard'
 import Stats from './pages/Stats'
 import Live from './pages/Live'
+import Alarms from './pages/Alarms'
 
 const { Header, Content } = Layout
 
-type PageKey = 'dashboard' | 'stats' | 'live'
+type PageKey = 'dashboard' | 'stats' | 'live' | 'alarms'
 
 export default function App() {
   const [page, setPage] = useState<PageKey>('dashboard')
@@ -34,6 +36,7 @@ export default function App() {
             { key: 'dashboard', icon: <DashboardOutlined />, label: '总览' },
             { key: 'stats', icon: <BarChartOutlined />, label: '加工统计' },
             { key: 'live', icon: <MonitorOutlined />, label: '实时监控' },
+            { key: 'alarms', icon: <WarningOutlined />, label: '报警' },
           ]}
           style={{ flex: 1 }}
         />
@@ -50,6 +53,7 @@ export default function App() {
           {page === 'dashboard' && <Dashboard />}
           {page === 'stats' && <Stats />}
           {page === 'live' && <Live />}
+          {page === 'alarms' && <Alarms />}
         </div>
       </Content>
     </Layout>

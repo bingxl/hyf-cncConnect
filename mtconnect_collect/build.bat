@@ -100,7 +100,7 @@ if not exist "%HERE%bin\sqlite3.obj" (
     cl /nologo /O2 /c /D SQLITE_THREADSAFE=0 /D _CRT_SECURE_NO_WARNINGS "%SQLITE%\sqlite3.c" /Fo:"%HERE%bin\sqlite3.obj"
     if errorlevel 1 ( echo [ERROR] sqlite3 build failed & exit /b 1 )
 )
-cl /nologo /O2 /EHsc /utf-8 /D _CRT_SECURE_NO_WARNINGS /I "%SQLITE%" "%HERE%tools\mtc_stats.cpp" "%HERE%bin\sqlite3.obj" /Fe:"%HERE%bin\mtc_stats.exe" /link winhttp.lib
+cl /nologo /O2 /EHsc /utf-8 /D _CRT_SECURE_NO_WARNINGS /I "%SQLITE%" /I "%HERE%src" "%HERE%tools\mtc_stats.cpp" "%HERE%src\db\db.cpp" "%HERE%src\db\stats_db.cpp" "%HERE%bin\sqlite3.obj" /Fe:"%HERE%bin\mtc_stats.exe" /link winhttp.lib
 if errorlevel 1 ( echo [ERROR] mtc_stats build failed & exit /b 1 )
 
 REM --- copy runtime files (gitignored binaries) ---
@@ -114,8 +114,12 @@ if not exist "%HERE%agent\agent.exe" (
 
 
 echo [5.5/5] Building webserver.exe ...
-cl /nologo /O2 /EHsc /utf-8 /D _CRT_SECURE_NO_WARNINGS /I "%SQLITE%" "%HERE%src\webserver\webserver.cpp" "%HERE%bin\sqlite3.obj" /Fe:"%HERE%bin\webserver.exe" /link winhttp.lib ws2_32.lib
+cl /nologo /O2 /EHsc /utf-8 /D _CRT_SECURE_NO_WARNINGS /I "%SQLITE%" /I "%HERE%src" "%HERE%src\webserver\webserver.cpp" "%HERE%src\db\db.cpp" "%HERE%src\db\stats_db.cpp" "%HERE%bin\sqlite3.obj" /Fe:"%HERE%bin\webserver.exe" /link winhttp.lib ws2_32.lib
 if errorlevel 1 ( echo [ERROR] webserver build failed & exit /b 1 )
+
+echo [5.6/5] Building mtc_ctl.exe ...
+cl /nologo /O2 /EHsc /utf-8 /D _CRT_SECURE_NO_WARNINGS "%HERE%tools\mtc_ctl.cpp" /Fe:"%HERE%bin\mtc_ctl.exe" /link winhttp.lib
+if errorlevel 1 ( echo [ERROR] mtc_ctl build failed & exit /b 1 )
 echo.
 echo ============================================================
 echo  Build successful!
@@ -129,6 +133,7 @@ echo  %HERE%bin\cnc_sim.exe
 echo  %HERE%bin\cnc_sim_ctl.exe
 echo  %HERE%bin\mtc_stats.exe
 echo  %HERE%bin\webserver.exe
+echo  %HERE%bin\mtc_ctl.exe
 echo ============================================================
 
 REM --- remove stray .obj artifacts left in the project root ---

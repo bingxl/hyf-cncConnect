@@ -16,6 +16,7 @@
  *   estop | estop_release
  *   mode <AUTOMATIC|MANUAL|MDI>
  *   program <O1000|O2000|O3000>
+ *   （每个程序含多个产品名 programInfo，每加工 10 件自动切换下一个）
  *   alarm <none|spindle|servo|overtravel|overheat|comms|logic|motion|system>
  *   jog <axis> <dir> <dist>     (manual jog, axis X/Y/Z, dir +/-)
  *   mdi <axis> <dist>           (single MDI move)
@@ -72,6 +73,8 @@
 #define RAPID_FEED 6000.0
 #define MAX_BLOCKS 32
 #define MAX_PROGRAMS 8
+#define MAX_PRODUCTS 8
+#define PRODUCT_SWITCH_PARTS 10 /* 每加工 10 件切换一个产品(programInfo) */
 #define MAX_KV 24
 #define MAX_HTTP 16384
 
@@ -134,8 +137,9 @@ typedef struct
 typedef struct
 {
     char id[16];
-    char comment[64];
     char label[64];
+    char products[MAX_PRODUCTS][64]; /* 产品名（程序注释），循环切换 */
+    int nproducts;
     Block blocks[MAX_BLOCKS];
     int nblocks;
 } Program;
@@ -145,15 +149,36 @@ typedef struct
 static Program g_programs[MAX_PROGRAMS];
 static int g_nprog = 0;
 
+static void set_products(Program *p, const char *const *names, int n)
+{
+    if (n > MAX_PRODUCTS)
+        n = MAX_PRODUCTS;
+    p->nproducts = n;
+    for (int i = 0; i < n; i++)
+        snprintf(p->products[i], sizeof(p->products[i]), "%s", names[i]);
+}
+
 static void init_programs(void)
 {
     Program *p;
+    static const char *const prods_o1000[] = {
+        "c-12-bracket-001/A0", "c-12-bracket-002/A0", "c-12-bracket-003/A0",
+        "c-12-bracket-004/A0", "c-12-bracket-005/A0", "c-12-bracket-006/A0",
+    };
+    static const char *const prods_o2000[] = {
+        "c-12-shaft-001/A0", "c-12-shaft-002/A0", "c-12-shaft-003/A0",
+        "c-12-shaft-004/A0", "c-12-shaft-005/A0", "c-12-shaft-006/A0",
+    };
+    static const char *const prods_o3000[] = {
+        "c-12-finish-001/A0", "c-12-finish-002/A0", "c-12-finish-003/A0",
+        "c-12-finish-004/A0", "c-12-finish-005/A0", "c-12-finish-006/A0",
+    };
 
     /* --- O1000 --- */
     p = &g_programs[g_nprog++];
     snprintf(p->id, sizeof(p->id), "O1000");
-    snprintf(p->comment, sizeof(p->comment), "c-12-bracket-001/A0");
     snprintf(p->label, sizeof(p->label), "Aluminum bracket");
+    set_products(p, prods_o1000, (int)(sizeof(prods_o1000) / sizeof(prods_o1000[0])));
     p->nblocks = 0;
     p->blocks[p->nblocks++] = (Block){BLK_RAPID, 0, 0, 10, 0, 0, "G00 X0 Y0 Z10"};
     p->blocks[p->nblocks++] = (Block){BLK_RAPID, 50, 30, 10, 0, 0, "G00 X50 Y30 Z10"};
@@ -171,8 +196,8 @@ static void init_programs(void)
     /* --- O2000 --- */
     p = &g_programs[g_nprog++];
     snprintf(p->id, sizeof(p->id), "O2000");
-    snprintf(p->comment, sizeof(p->comment), "c-12-shaft-002/A0");
     snprintf(p->label, sizeof(p->label), "Steel shaft");
+    set_products(p, prods_o2000, (int)(sizeof(prods_o2000) / sizeof(prods_o2000[0])));
     p->nblocks = 0;
     p->blocks[p->nblocks++] = (Block){BLK_RAPID, 0, 0, 10, 0, 0, "G00 X0 Y0 Z10"};
     p->blocks[p->nblocks++] = (Block){BLK_RAPID, 30, 20, 10, 0, 0, "G00 X30 Y20 Z10"};
@@ -189,8 +214,8 @@ static void init_programs(void)
     /* --- O3000 --- */
     p = &g_programs[g_nprog++];
     snprintf(p->id, sizeof(p->id), "O3000");
-    snprintf(p->comment, sizeof(p->comment), "c-12-finish-003/A0");
     snprintf(p->label, sizeof(p->label), "Finish Pass");
+    set_products(p, prods_o3000, (int)(sizeof(prods_o3000) / sizeof(prods_o3000[0])));
     p->nblocks = 0;
     p->blocks[p->nblocks++] = (Block){BLK_RAPID, 0, 0, 10, 0, 0, "G00 X0 Y0 Z10"};
     p->blocks[p->nblocks++] = (Block){BLK_RAPID, 10, 10, 10, 0, 0, "G00 X10 Y10 Z10"};
@@ -217,6 +242,7 @@ typedef struct
     CtrlMode mode;
     AlarmId alarm;
     int prog_index;
+    int product_index; /* 当前产品（programInfo）在 program.products[] 中的下标 */
     int line;
     double frac;
     double sx, sy, sz;
@@ -241,6 +267,33 @@ typedef struct
 } Machine;
 
 static Machine g_m;
+
+/* 当前产品名（programInfo）；每加工 PRODUCT_SWITCH_PARTS 件切换下一个 */
+static const char *current_product(void)
+{
+    const Program *p = &g_programs[g_m.prog_index];
+    if (p->nproducts <= 0)
+        return p->label;
+    if (g_m.product_index < 0 || g_m.product_index >= p->nproducts)
+        g_m.product_index = 0;
+    return p->products[g_m.product_index];
+}
+
+/* 由已完成件数推导产品下标：第 1..10 件 -> 产品0，11..20 件 -> 产品1，循环 */
+static void update_product_index(void)
+{
+    const Program *p = &g_programs[g_m.prog_index];
+    if (p->nproducts <= 0)
+    {
+        g_m.product_index = 0;
+        return;
+    }
+    int idx = (g_m.part_current - 1) / PRODUCT_SWITCH_PARTS;
+    idx = idx % p->nproducts;
+    if (idx < 0)
+        idx = 0;
+    g_m.product_index = idx;
+}
 
 /* ---------------- 锁（控制线程 / 主循环共享状态） ---------------- */
 
@@ -487,7 +540,7 @@ static void emit_state(void)
     PUT("%s|execution|%s", ts, exec_str(g_m.exec));
     PUT("%s|mode|%s", ts, mode_str(g_m.mode));
     PUT("%s|program|%s", ts, prog->id);
-    PUT("%s|programInfo|%s", ts, prog->comment);
+    PUT("%s|programInfo|%s", ts, current_product());
     PUT("%s|block|%s", ts, blk ? blk->text : "");
     PUT("%s|line|%d", ts, blk ? g_m.line + 1 : 0);
     PUT("%s|pathFeedrate|%.1f", ts, g_m.feed_act);
@@ -643,6 +696,7 @@ static void sim_step(double dt)
         g_m.part++;
         g_m.part_current++;
         g_m.part_total++;
+        update_product_index(); /* 每 10 件切换一个产品 */
         g_m.exec = EXEC_READY;
         g_m.line = 0;
         g_m.frac = 0.0;
@@ -887,10 +941,14 @@ static void state_json(char *buf, int cap)
         blk = p->blocks[g_m.line].text;
         line = g_m.line + 1;
     }
+    int until = PRODUCT_SWITCH_PARTS - (g_m.part_current % PRODUCT_SWITCH_PARTS);
+    if (until == PRODUCT_SWITCH_PARTS)
+        until = PRODUCT_SWITCH_PARTS;
     snprintf(buf, cap,
              "{\"name\":\"%s\",\"avail\":\"%s\",\"estop\":\"%s\",\"auto\":%s,"
              "\"execution\":\"%s\",\"mode\":\"%s\","
-             "\"program\":\"%s\",\"programInfo\":\"%s\",\"line\":%d,\"block\":\"%s\","
+             "\"program\":\"%s\",\"programInfo\":\"%s\",\"product_index\":%d,"
+             "\"parts_until_switch\":%d,\"line\":%d,\"block\":\"%s\","
              "\"feed_act\":%.1f,\"feed_ovr\":%d,"
              "\"spindle\":%.1f,\"spindle_ovr\":%d,\"spindle_load\":%.1f,"
              "\"position\":[%.3f,%.3f,%.3f],\"load\":[%.1f,%.1f,%.1f],"
@@ -901,7 +959,7 @@ static void state_json(char *buf, int cap)
              g_m.estop ? "TRIGGERED" : "ARMED",
              g_m.auto_mode ? "true" : "false",
              exec_str(g_m.exec), mode_str(g_m.mode),
-             p->id, p->comment, line, blk,
+             p->id, current_product(), g_m.product_index, until, line, blk,
              g_m.feed_act, g_m.feed_ovr,
              g_m.sp_act, g_m.sp_ovr, g_m.sp_load,
              g_m.x, g_m.y, g_m.z, g_m.lx, g_m.ly, g_m.lz,
@@ -1022,6 +1080,7 @@ static int cmd_apply(const KV *kvs, int n, char *msg, int msgcap)
         g_m.jog_active = false;
         g_m.mdi_active = false;
         g_m.part_current = 0;
+        g_m.product_index = 0;
         snprintf(msg, msgcap, "reset to program start");
         return 1;
     }
@@ -1089,10 +1148,11 @@ static int cmd_apply(const KV *kvs, int n, char *msg, int msgcap)
                 g_m.sy = g_m.ty = 0.0;
                 g_m.sz = g_m.tz = 10.0;
                 g_m.part_current = 0;
+                g_m.product_index = 0;
                 g_m.sp_tgt = 0.0;
                 g_m.feed_act = 0.0;
-                snprintf(msg, msgcap, "program set to %s (%s)",
-                         g_programs[i].id, g_programs[i].comment);
+                snprintf(msg, msgcap, "program set to %s (%d products)",
+                         g_programs[i].id, g_programs[i].nproducts);
                 return 1;
             }
         }
@@ -1213,15 +1273,21 @@ static int cmd_apply(const KV *kvs, int n, char *msg, int msgcap)
             g_m.part_required = atoi(v) < 0 ? 0 : atoi(v);
         else if (ieq(k, "part_total"))
             g_m.part_total = atoi(v) < 0 ? 0 : atoi(v);
-        else if (ieq(k, "part_current"))
+        else if (ieq(k, "part_current")) {
             g_m.part_current = atoi(v) < 0 ? 0 : atoi(v);
+            update_product_index(); /* 件数变化后同步产品下标 */
+        }
+        else if (ieq(k, "product_index")) {
+            g_m.product_index = atoi(v);
+            if (g_m.product_index < 0) g_m.product_index = 0;
+        }
         else if (ieq(k, "spindle"))
             g_m.sp_tgt = fabs(atof(v));
         else
         {
             snprintf(msg, msgcap,
                      "unknown key (Fovr|SspeedOvr|part_required|part_total|"
-                     "part_current|spindle)");
+                     "part_current|product_index|spindle)");
             return 0;
         }
         snprintf(msg, msgcap, "%s set to %s", k, v);
@@ -1298,11 +1364,14 @@ static const char g_help[] =
     "  estop / estop_release        emergency stop on/off\r\n"
     "  mode <AUTOMATIC|MANUAL|MDI>  switch controller mode\r\n"
     "  program <O1000|O2000|O3000>  load a built-in part program\r\n"
+    "                                (each program has multiple products,\r\n"
+    "                                switch every 10 parts)\r\n"
     "  alarm <none|spindle|servo|overtravel|overheat|comms|logic|motion|system>\r\n"
     "  jog <axis> <dir> <dist>      manual jog, e.g. jog X + 20\r\n"
     "  mdi <axis> <dist>            single MDI move, e.g. mdi X 20\r\n"
     "  set <key> <value>            Fovr | SspeedOvr | part_required |\r\n"
-    "                               part_total | part_current | spindle\r\n"
+    "                               part_total | part_current | product_index |\r\n"
+    "                               spindle\r\n"
     "  setpos <axis> <value>        force an axis position\r\n"
     "  auto <on|off>                re-enable / disable the auto cycle\r\n"
     "  state                        show current state (same as GET /state)\r\n"

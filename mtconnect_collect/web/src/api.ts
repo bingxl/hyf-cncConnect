@@ -1,6 +1,9 @@
 // API client - talks to webserver (dev: vite proxy /api -> :8088)
 const BASE = '/api'
 
+// 加工统计页“全部机床”标记：后端按 machine=ALL 返回全厂汇总
+export const ALL_MACHINES = 'ALL'
+
 export interface MachineInfo {
   name: string
   first_ts: number
@@ -10,6 +13,7 @@ export interface MachineInfo {
 export interface SummaryItem {
   machine: string
   mach_sec: number
+  power_sec: number
   util_rate: number
   part_total_start: number
   part_total_end: number
@@ -27,6 +31,7 @@ export interface SummaryItem {
 export interface TimePoint {
   bucket_ts: number
   mach_sec: number
+  power_sec?: number
   machining_count: number
   sample_count: number
   produced?: number
@@ -53,6 +58,17 @@ export interface LiveItem {
   program: string
   comment: string
   part_total: number | null
+}
+
+export interface AlarmItem {
+  machine: string
+  item_id: string
+  item_type: string
+  state: string
+  first_ts: number
+  last_ts: number
+  end_ts: number | null
+  active: number
 }
 
 async function get<T>(path: string): Promise<T> {
@@ -84,4 +100,14 @@ export function apiProducts(from: number, to: number, machine: string) {
 }
 export function apiLive() {
   return get<{ items: LiveItem[] }>('/live/current')
+}
+export function apiAlarmsCurrent() {
+  return get<{ items: AlarmItem[] }>('/alarms/current')
+}
+export function apiAlarmsHistory(from: number, to: number, machine?: string) {
+  const m =
+    machine && machine !== ALL_MACHINES
+      ? `&machine=${encodeURIComponent(machine)}`
+      : ''
+  return get<{ items: AlarmItem[] }>(`/alarms/history?from=${from}&to=${to}${m}`)
 }
