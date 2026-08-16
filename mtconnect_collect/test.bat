@@ -29,8 +29,9 @@ if not exist "%HERE%log" mkdir "%HERE%log"
 
 echo [2/4] Starting simulators ...
 for /f "usebackq tokens=1-5" %%t in ("%HERE%agent\adapters.txt") do (
-    echo   simulating %%~u  on SHDR %%x
-    start "sim-%%u" /min "%HERE%bin\shdr_sim.exe" %%x 500
+    set /a CTLPORT=%%x+2000
+    echo   simulating %%~u  on SHDR %%x  ^(control http://127.0.0.1:!CTLPORT!^)
+    start "sim-%%u" /min "%HERE%bin\cnc_sim.exe" %%x !CTLPORT! 500 %%~u
 )
 echo [3/4] Starting MTConnect agent  ^(http://127.0.0.1:%HTTP_PORT%^) ...
 start "mtc-agent" /min cmd /c "cd /d %HERE%agent && agent.exe run agent.cfg > %HERE%log\agent_console.log 2>&1"

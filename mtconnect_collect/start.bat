@@ -6,7 +6,7 @@ REM   2. regenerates agent config (agent.cfg + Devices.xml + adapters.txt)
 REM   3. starts collectors per machine type:
 REM        FANUC -> fanuc_adapter.exe (FOCAS2)
 REM        MAZAK -> mazak_adapter.exe (MTConnect pull)
-REM        SIM   -> shdr_sim.exe       (offline)
+REM        SIM   -> cnc_sim.exe        (controllable simulator, SHDR + HTTP control)
 REM        SHDR  -> (none; agent connects directly to remote SHDR)
 REM   4. starts the MTConnect agent (HTTP)
 REM
@@ -49,8 +49,9 @@ for /f "usebackq tokens=1-5" %%t in ("%HERE%agent\adapters.txt") do (
         echo   MAZAK  %%~u  %%v:%%w  -^>  SHDR %%x
         start "mtc-%%u" /min cmd /c "%HERE%bin\mazak_adapter.exe run %%v %%w %%x > %HERE%log\%%u.log 2>&1"
     ) else if "%%t"=="SIM" (
-        echo   SIM    %%~u  -^>  SHDR %%x
-        start "sim-%%u" /min "%HERE%bin\shdr_sim.exe" %%x 500
+        set /a CTLPORT=%%x+2000
+        echo   SIM    %%~u  -^>  SHDR %%x  ^(control http://127.0.0.1:!CTLPORT!^)
+        start "sim-%%u" /min "%HERE%bin\cnc_sim.exe" %%x !CTLPORT! 500 %%~u
     ) else if "%%t"=="SHDR" (
         echo   SHDR   %%~u  passthrough  %%v:%%w
     )

@@ -12,7 +12,7 @@ sqlite3 源码与库。
 │          FOCAS2 (fwlib32) 直连，输出标准 SHDR               │
 │  MAZAK:  mazak_adapter.exe <ip> <mtconnect端口> <SHDR端口> │
 │          MTConnect 拉取模式(Probe/Streams) → SHDR          │
-│  SIM:    shdr_sim.exe <SHDR端口>         (离线模拟)        │
+│  SIM:    cnc_sim.exe <SHDR端口> <控制端口>  (可控模拟机床)  │
 │  SHDR:   透传——agent 直连远程 SHDR，无需本地进程           │
 └──────────────────────────┬─────────────────────────────────┘
                            │ 127.0.0.1:7878+n
@@ -34,7 +34,7 @@ sqlite3 源码与库。
 #   type: FANUC | MAZAK | SIM | SHDR
 ZXJ03,FANUC,192.168.11.186,8193          ; FANUC → FOCAS 端口
 MZK01,MAZAK,192.168.11.200,7878          ; MAZAK → MTConnect 端口
-SIM01,SIM,127.0.0.1,7878                  ; 离线模拟
+SIM01,SIM,127.0.0.1,7878                  ; 可控模拟机床 (cnc_sim)
 BRIDGE,SHDR,192.168.10.50,7878            ; 远程 SHDR 透传
 ```
 
@@ -52,7 +52,8 @@ BRIDGE,SHDR,192.168.10.50,7878            ; 远程 SHDR 透传
 | `devices/` | 设备模型模板：`fanuc.xml` / `mazak.xml` / `shdr.xml` / `sim.xml` |
 | `tools/genconfig.c` | 读 jichuang.txt → 生成 Devices.xml（模板渲染）+ agent.cfg + adapters.txt |
 | `tools/mtc_stats.c` | 采样入库 + 报表（运行时间/产量/分产品） |
-| `tools/shdr_sim.c` / `tools/mazak_sim.c` | 离线模拟器（推送模式 / Mazak 拉取模式） |
+| `tools/cnc_sim.c` / `tools/cnc_sim_ctl.c` | 可控模拟机床（SHDR 推送 + HTTP 控制）+ 控制 CLI |
+| `tools/shdr_sim.c` / `tools/mazak_sim.c` | 简单离线模拟器（推送模式 / Mazak 拉取模式） |
 | `bin/` | 编译产物 + Fwlib32.dll |
 | `agent/` | agent.exe + 生成配置 |
 
@@ -69,6 +70,57 @@ mtc_stats.exe report stats.db 1800     % 报表
 ```
 
 访问 http://127.0.0.1:5000/{probe,current,sample}
+
+## 可控模拟机床 cnc_sim
+
+`cnc_sim.exe` 模拟一台 3 轴加工中心（FANUC 风格）：内置 3 个加工程序
+（O1000/O2000/O3000），按程序逐段执行（快移/进给/主轴/结束），输出真实感的
+轴位置/负载、进给、主轴转速/负载、件数、模式/状态、报警条件等标准 SHDR 数据，
+并可通过本地 HTTP 接口控制机床状态。
+
+```bat
+cnc_sim.exe <SHDR端口> [控制端口] [采样ms] [名称]
+REM 默认: SHDR=7878, 控制端口=SHDR+2000, 500ms, 名称 SIM01
+```
+
+控制接口（仅本机）：
+
+```bat
+REM 查看状态 / 命令帮助
+curl http://127.0.0.1:9878/state
+curl http://127.0.0.1:9878/
+REM 发送控制命令（JSON 或 query 均可）
+curl -X POST http://127.0.0.1:9878/control -d "{\"cmd\":\"start\"}"
+curl "http://127.0.0.1:9878/control?cmd=start"
+```
+
+常用命令（也可用配套 CLI：`cnc_sim_ctl.exe <控制端口> <命令> ...`）：
+
+| 命令 | 说明 |
+|------|------|
+| `start` / `stop` / `hold` / `resume` / `reset` | 启动/停止/保持/继续/复位 |
+| `estop` / `estop_release` | 急停 / 解除急停 |
+| `mode <AUTOMATIC\|MANUAL\|MDI>` | 切换模式 |
+| `program <O1000\|O2000\|O3000>` | 切换加工程序（产品注释随之变化） |
+| `alarm <none\|spindle\|servo\|overtravel\|overheat\|comms\|logic\|motion\|system>` | 触发/清除报警（条件置 FAULT、执行中断） |
+| `jog <axis> <dir> <dist>` | 手动移动，如 `jog X + 20` |
+| `mdi <axis> <dist>` | 单段 MDI 移动 |
+| `set <key> <value>` | `Fovr` / `SspeedOvr` / `part_required` / `part_total` / `part_current` / `spindle` |
+| `setpos <axis> <value>` | 直接设置坐标 |
+
+示例：
+
+```bat
+bin\cnc_sim_ctl.exe 9878 start
+bin\cnc_sim_ctl.exe 9878 mode MANUAL
+bin\cnc_sim_ctl.exe 9878 jog X + 20
+bin\cnc_sim_ctl.exe 9878 alarm spindle
+bin\cnc_sim_ctl.exe 9878 program O2000
+bin\cnc_sim_ctl.exe 9878 set Fovr 120
+```
+
+`start.bat` 启动时会对每个 SIM 机器自动拉起 `cnc_sim.exe`，控制端口 = SHDR 端口 + 2000
+（如 SIM01 的 SHDR 为 7888，则控制端口为 9888），并打印在启动日志里。
 
 ## 加工统计口径
 

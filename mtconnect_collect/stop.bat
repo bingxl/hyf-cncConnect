@@ -9,6 +9,8 @@ taskkill /F /IM fanuc_adapter.exe 2>nul
 echo Stopping MAZAK collectors ...
 taskkill /F /IM mazak_adapter.exe 2>nul
 echo Stopping simulators ...
+taskkill /F /IM cnc_sim.exe 2>nul
+taskkill /F /IM cnc_sim_ctl.exe 2>nul
 taskkill /F /IM shdr_sim.exe 2>nul
 taskkill /F /IM mazak_sim.exe 2>nul
 echo Done.

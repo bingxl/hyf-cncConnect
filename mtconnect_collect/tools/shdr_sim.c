@@ -10,7 +10,6 @@
  *   interval  sample interval in ms (default 1000)
  */
 
-#define _CRT_SECURE_NO_WARNINGS
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
 #include <windows.h>

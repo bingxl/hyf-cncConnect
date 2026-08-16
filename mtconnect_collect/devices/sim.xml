@@ -1,16 +1,20 @@
 <Device name="%NAME%" uuid="%NAME%" id="%NAME%">
-      <Description>SIM %NAME% (simulated)</Description>
+      <Description>SIM %NAME% (cnc_sim controllable simulator)</Description>
       <DataItems>
         <DataItem id="avail" type="AVAILABILITY" category="EVENT"/>
         <DataItem id="estop" type="EMERGENCY_STOP" category="EVENT"/>
         <DataItem id="execution" type="EXECUTION" category="EVENT"/>
         <DataItem id="mode" type="CONTROLLER_MODE" category="EVENT"/>
+        <DataItem id="message" type="MESSAGE" category="EVENT"/>
         <DataItem id="line" type="LINE" category="EVENT"/>
         <DataItem id="program" type="PROGRAM" category="EVENT"/>
         <DataItem id="programInfo" type="PROGRAM_COMMENT" category="EVENT"/>
         <DataItem id="block" type="BLOCK" category="EVENT"/>
         <DataItem id="pathFeedrate" type="PATH_FEEDRATE" category="SAMPLE"/>
         <DataItem id="pathPosition" type="PATH_POSITION" category="SAMPLE"/>
+        <DataItem id="probe" type="SAMPLE" category="SAMPLE" name="probe"/>
+        <DataItem id="SspeedOvr" type="SAMPLE" category="SAMPLE" name="spindleSpeedOverride"/>
+        <DataItem id="Fovr" type="SAMPLE" category="SAMPLE" name="feedOverride"/>
         <DataItem id="part" type="SAMPLE" category="SAMPLE" name="partCount"/>
         <DataItem id="part_current" type="SAMPLE" category="SAMPLE" name="partCurrent"/>
         <DataItem id="part_required" type="SAMPLE" category="SAMPLE" name="partRequired"/>

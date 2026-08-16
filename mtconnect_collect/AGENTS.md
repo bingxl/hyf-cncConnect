@@ -18,7 +18,7 @@ passthrough. Independent from the `cnc_monitor` project (a sibling under `F:\cod
 │          FOCAS2 (fwlib32) direct → SHDR                            │
 │  MAZAK:  mazak_adapter.exe <ip> <mtconnect-port> <shdr-port>      │
 │          MTConnect pull (Probe/Streams) → SHDR                     │
-│  SIM:    shdr_sim.exe <shdr-port>            (offline simulation)  │
+│  SIM:    cnc_sim.exe <shdr-port> <control-port>  (controllable)    │
 │  SHDR:   passthrough — agent connects to remote SHDR directly     │
 └──────────────────────────┬─────────────────────────────────────────┘
                            │ 127.0.0.1:7878+n
@@ -28,7 +28,7 @@ passthrough. Independent from the `cnc_monitor` project (a sibling under `F:\cod
 └──────────────────────────┬─────────────────────────────────────────┘
                            │
 ┌── Application layer ──────▼─────────────────────────────────────────┐
-│  mtc_stats (poll/report)  running time / production / per product    │
+│  mtc_stats (stream/poll/report)  running time / production / product │
 │  webserver.exe (optional web dashboard, see web/ — out of scope)    │
 └──────────────────────────────────────────────────────────────────────┘
 ```
@@ -48,8 +48,9 @@ passthrough. Independent from the `cnc_monitor` project (a sibling under `F:\cod
 | `src/mazak/mazak_adapter.cpp` | MAZAK MTConnect-pull collector; `mapTag()` maps remote `tag|value` lines to datum names |
 | `src/webserver/webserver.cpp` | Optional web server (C++ rewrite, hosts `web/dist`, REST API over stats.db) |
 | `tools/genconfig.c` | Reads `jichuang.txt` → generates `agent/Devices.xml` (from templates), `agent/agent.cfg`, `agent/adapters.txt`, per-machine `adapter.ini` |
-| `tools/mtc_stats.c` | `poll` (WinHTTP GET `/current` → SQLite `samples`) and `report` (machining time buckets / production delta / per-product) |
+| `tools/mtc_stats.cpp` | `stream` (增量拉取 agent `/sample?from=<seq>` → SQLite `samples`)、`poll`（兼容旧 `/current` 快照）和 `report`（加工时长分桶 / 产量差值 / 分产品） |
 | `tools/shdr_sim.c` | Offline SHDR simulator (push mode, fake FANUC-style data) |
+| `tools/cnc_sim.c` / `tools/cnc_sim_ctl.c` | Controllable realistic CNC simulator (SHDR push + local HTTP control API) + control CLI |
 | `tools/mazak_sim.c` | Offline Mazak pull-mode simulator (Streams/Probe/Changes commands) |
 | `devices/fanuc.xml`, `devices/mazak.xml`, `devices/sim.xml`, `devices/shdr.xml` | Device model templates with placeholders `%NAME% %UUID% %IP% %PORT% %SHDRPORT%` |
 | `jichuang.txt` | Machine list v2: `name,type,ip,port[,config]` |
@@ -66,7 +67,7 @@ passthrough. Independent from the `cnc_monitor` project (a sibling under `F:\cod
 #   type: FANUC | MAZAK | SIM | SHDR
 ZXJ03,FANUC,192.168.11.186,8193          ; FANUC → FOCAS port
 MZK01,MAZAK,192.168.11.200,7878          ; MAZAK → MTConnect port
-SIM01,SIM,127.0.0.1,7878                  ; offline simulation
+SIM01,SIM,127.0.0.1,7878                  ; controllable simulator (cnc_sim.exe)
 BRIDGE,SHDR,192.168.10.50,7878            ; remote SHDR passthrough
 ```
 
@@ -91,7 +92,8 @@ build.bat
 
 - MSVC (`cl.exe`) via VS Build Tools, **x86** target (required by `Fwlib32.lib`).
 - Outputs in `bin/`: `fanuc_adapter.exe`, `mazak_adapter.exe`, `genconfig.exe`,
-  `shdr_sim.exe`, `mazak_sim.exe`, `mtc_stats.exe`, `webserver.exe`.
+  `shdr_sim.exe`, `mazak_sim.exe`, `cnc_sim.exe`, `cnc_sim_ctl.exe`,
+  `mtc_stats.exe`, `webserver.exe`.
 - `Fwlib32.dll` copied to `bin/`; `agent.exe` copied from `../third_party/mtconnect-agent/bin`
   if present (warns otherwise — drop it into `agent/` manually).
 - SQLite amalgamation built once into `bin/sqlite3.obj` (`SQLITE_THREADSAFE=0`).
@@ -108,20 +110,57 @@ test.bat                     % offline demo (all SIM)
 status.bat                   % connectivity table (powershell parses /current)
 stop.bat                     % kill agent.exe, *_adapter.exe, *_sim.exe
 view.bat [bucket] [from] [to]% report (default last 24h / 1800s buckets)
-start_poll.bat               % run mtc_stats poll as background process
+start_poll.bat               % run mtc_stats stream as background process
 start_hidden.bat             % start all services with no console windows
-bin\mtc_stats.exe poll 5000 5 stats.db    % sample into sqlite
+bin\mtc_stats.exe stream 5000 stats.db 5000  % incremental stream into sqlite
+bin\mtc_stats.exe poll 5000 5 stats.db       % legacy /current snapshot
 bin\mtc_stats.exe report stats.db 1800    % report
 ```
 
 Check agent: http://127.0.0.1:5000/{probe,current,sample}
 
+## Controllable Simulator (cnc_sim)
+
+`cnc_sim.exe` simulates a 3-axis machining-center style FANUC machine and pushes
+realistic SHDR data on `<shdr_port>` for the agent: program cycle (rapid / feed /
+spindle / end), axis positions / commanded / loads, feed, spindle speed / load,
+part counts (`part`, `part_current`, `part_required`, `part_total`), `tmmode`,
+execution / mode / estop / alarm conditions (`servo`, `spindle`, `Xtravel`, ...).
+
+Machine state is controlled over a local HTTP API on `<control_port>` (default
+`shdr_port + 2000`):
+
+```
+GET  /                  -> command help
+GET  /state             -> machine state (JSON)
+POST /control           -> {"cmd":"start", ...}  (GET /control?cmd=... also works)
+
+Commands:
+  start | stop | hold | resume | reset
+  estop | estop_release
+  mode <AUTOMATIC|MANUAL|MDI>
+  program <O1000|O2000|O3000>        (3 built-in part programs, product comment switches)
+  alarm <none|spindle|servo|overtravel|overheat|comms|logic|motion|system>
+  jog <axis> <dir> <dist>            e.g. jog X + 20
+  mdi <axis> <dist>                  e.g. mdi Z -5
+  set <key> <value>                  Fovr | SspeedOvr | part_required |
+                                     part_total | part_current | spindle
+  setpos <axis> <value>
+```
+
+Convenience CLI: `cnc_sim_ctl.exe <control_port> <command> [args...]`
+(e.g. `cnc_sim_ctl 9878 start`, `cnc_sim_ctl 9878 alarm spindle`).
+`start.bat` / `test.bat` launch `cnc_sim.exe` for SIM entries (control port =
+SHDR port + 2000, printed at startup).
+
 ## Stats Model (mtc_stats)
 
 - `samples` table: `ts, machine, execution, mode, tmmode, program, comment, part_total`
   `PRIMARY KEY(ts, machine)`. Index on `(machine, ts)`.
-- `poll`: GET `/current`, parses `<DeviceStream name="...">` blocks with lightweight
-  string search (regex-style, not a full XML parser). Requires availability=AVAILABLE.
+- `stream`: 流式增量采集 —— 每次 `GET /sample?from=<lastSeq+1>&count=1000` 只拉取新
+  事件，按响应事件 `sequence` 续传（`stream_state` 表持久化 seq / instanceId），
+  重启或 agent 重启后自动 `/current` 快照重建基线。响应按块读取即时解析，兼容
+  长连接流式 agent；`poll` 保留旧 `/current` 全量快照模式。
 - `report` commands:
   1. **Machining time** per machine per bucket: sample counted as machining when
      `execution==ACTIVE && mode==AUTOMATIC && tmmode==0`; bucket aligned to wall-clock
@@ -161,4 +200,4 @@ Check agent: http://127.0.0.1:5000/{probe,current,sample}
   `agent/adapters.txt`, `adapters.txt`, `log/`, `.vsbuild_cache`, `stats.db`.
 - `bin/`, `agent/` binaries and `web/node_modules` are gitignored (check root `.gitignore`).
 - Bat scripts use `setlocal enabledelayedexpansion` and `%~dp0` for path independence.
-- `mtc_stats report` is a plain C utility — avoid platform-specific libs beyond WinHTTP/SQLite.
+- `mtc_stats` is a C++ utility — avoid platform-specific libs beyond WinHTTP/SQLite.

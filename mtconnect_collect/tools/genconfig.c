@@ -16,7 +16,6 @@
  *   genconfig.exe <jichuang.txt> <out_dir> [http_port] [shdr_base_port] [shdr_host]
  */
 
-#define _CRT_SECURE_NO_WARNINGS
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
