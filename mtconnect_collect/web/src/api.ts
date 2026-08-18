@@ -71,6 +71,33 @@ export interface AlarmItem {
   active: number
 }
 
+export interface ShiftProduct {
+  comment: string
+  produced: number
+}
+
+export interface ShiftMachine {
+  machine: string
+  mach_sec: number
+  power_sec: number
+  util_rate: number
+  produced: number
+  products: ShiftProduct[]
+}
+
+export interface ShiftItem {
+  shift: 'day' | 'night'
+  date: string
+  date_ts: number
+  start: number
+  end: number
+  ws: number
+  we: number
+  label: string
+  machines: ShiftMachine[]
+  fleet: ShiftMachine
+}
+
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(BASE + path)
   if (!res.ok) {
@@ -110,4 +137,10 @@ export function apiAlarmsHistory(from: number, to: number, machine?: string) {
       ? `&machine=${encodeURIComponent(machine)}`
       : ''
   return get<{ items: AlarmItem[] }>(`/alarms/history?from=${from}&to=${to}${m}`)
+}
+
+export function apiShifts(from: number, to: number, machine: string) {
+  return get<{ from: number; to: number; shifts: ShiftItem[] }>(
+    `/stats/shifts?from=${from}&to=${to}&machine=${encodeURIComponent(machine)}`,
+  )
 }

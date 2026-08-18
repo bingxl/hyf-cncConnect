@@ -19,6 +19,7 @@
 #include <cstring>
 #include <cctype>
 #include <ctime>
+#include <algorithm>
 #include <string>
 #include <vector>
 #include <map>
@@ -451,6 +452,207 @@ std::string api_products(const SampleSet &ss, const std::string &label,
     return o;
 }
 
+/* ---------------- 班次统计（白班/夜班） ---------------- */
+
+/* 班次定义（AGENTS.md）：
+   周一~周六：白班 08:30-20:30，夜班 20:30-次日 08:30
+   周日    ：白班 08:30-17:00，无夜班 */
+struct ShiftWin {
+    bool day = true;
+    long long start = 0, end = 0; /* 完整班次 [start,end) */
+    long long ws = 0, we = 0;     /* 与查询区间相交的窗口 [ws,we) */
+    long long dateTs = 0;
+    char date[16];
+    char label[48];
+};
+
+static long long local_mktime(int y, int mo, int d, int h, int mi)
+{
+    struct tm t = {};
+    t.tm_year = y - 1900;
+    t.tm_mon = mo - 1;
+    t.tm_mday = d;
+    t.tm_hour = h;
+    t.tm_min = mi;
+    t.tm_isdst = -1;
+    return (long long)mktime(&t);
+}
+
+static void build_shifts(long long from, long long to, std::vector<ShiftWin> &out)
+{
+    time_t f = (time_t)from;
+    struct tm tf;
+    localtime_s(&tf, &f);
+    time_t te = (time_t)to;
+    struct tm tt;
+    localtime_s(&tt, &te);
+
+    struct tm cur = tf;
+    for (int guard = 0; guard < 128; guard++) {
+        if (cur.tm_year > tt.tm_year ||
+            (cur.tm_year == tt.tm_year && cur.tm_mon > tt.tm_mon) ||
+            (cur.tm_year == tt.tm_year && cur.tm_mon == tt.tm_mon &&
+             cur.tm_mday > tt.tm_mday))
+            break;
+
+        int y = cur.tm_year + 1900, mo = cur.tm_mon + 1, d = cur.tm_mday;
+        long long day0 = local_mktime(y, mo, d, 0, 0);
+        int wday = cur.tm_wday; /* 0=Sunday */
+
+        ShiftWin day;
+        day.day = true;
+        day.start = day0 + 8 * 3600 + 30 * 60;
+        day.end = (wday == 0) ? day0 + 17 * 3600 : day0 + 20 * 3600 + 30 * 60;
+        snprintf(day.date, sizeof(day.date), "%04d-%02d-%02d", y, mo, d);
+        snprintf(day.label, sizeof(day.label),
+                 wday == 0 ? "白班(周日 08:30-17:00)" : "白班 08:30-20:30");
+        day.dateTs = day0;
+        day.ws = day.start > from ? day.start : from;
+        day.we = day.end < to ? day.end : to;
+        if (day.ws < day.we) out.push_back(day);
+
+        if (wday != 0) {
+            ShiftWin night;
+            night.day = false;
+            night.start = day0 + 20 * 3600 + 30 * 60;
+            night.end = day0 + 32 * 3600 + 30 * 60; /* 次日 08:30 */
+            snprintf(night.date, sizeof(night.date), "%04d-%02d-%02d", y, mo, d);
+            snprintf(night.label, sizeof(night.label), "夜班 20:30-08:30");
+            night.dateTs = day0;
+            night.ws = night.start > from ? night.start : from;
+            night.we = night.end < to ? night.end : to;
+            if (night.ws < night.we) out.push_back(night);
+        }
+
+        cur.tm_mday++;
+        time_t nx = mktime(&cur);
+        localtime_s(&cur, &nx);
+    }
+}
+
+struct ShiftMach {
+    std::string name;
+    long long mach_sec = 0, power_sec = 0, produced = 0;
+    std::vector<std::pair<std::string, long long>> products;
+};
+
+/* 在 [ws,we) 内按机床聚合：加工/开机时间（相邻样本差）、产量与分产品件数 */
+static void shift_aggregate(const SampleSet &ss, const std::string &filter,
+                            long long ws, long long we,
+                            std::vector<ShiftMach> &machines, ShiftMach *fleet)
+{
+    std::map<std::string, long long> machSec, powerSec, produced;
+    std::map<std::string, std::map<std::string, long long>> prodByComment;
+    std::map<std::string, const Sample *> prevs;
+
+    for (const auto &s : ss.rows) {
+        if (s.ts < ws || s.ts >= we) continue;
+        if (!filter.empty() && s.machine != filter) continue;
+        const Sample *prev = prevs[s.machine];
+        if (prev) {
+            long long dt = s.ts - prev->ts;
+            if (dt > 0 && dt <= POWER_GAP_MAX) {
+                if (is_machining(*prev)) machSec[s.machine] += dt;
+                if (prev->power != 0) powerSec[s.machine] += dt;
+            }
+            if (prev->part_total >= 0 && s.part_total >= 0 &&
+                s.part_total > prev->part_total) {
+                long long inc = s.part_total - prev->part_total;
+                produced[s.machine] += inc;
+                prodByComment[s.machine][prev->comment] += inc;
+            }
+        }
+        prevs[s.machine] = &s;
+    }
+
+    for (const auto &kv : machSec) {
+        ShiftMach m;
+        m.name = kv.first;
+        m.mach_sec = kv.second;
+        m.power_sec = powerSec[kv.first];
+        m.produced = produced[kv.first];
+        for (const auto &pc : prodByComment[kv.first])
+            if (!pc.first.empty() && pc.second > 0)
+                m.products.push_back(pc);
+        std::sort(m.products.begin(), m.products.end(),
+                  [](const auto &a, const auto &b) { return a.second > b.second; });
+        machines.push_back(std::move(m));
+    }
+    std::sort(machines.begin(), machines.end(),
+              [](const ShiftMach &a, const ShiftMach &b) { return a.name < b.name; });
+
+    if (fleet) {
+        std::map<std::string, long long> fp;
+        for (const auto &m : machines) {
+            fleet->mach_sec += m.mach_sec;
+            fleet->power_sec += m.power_sec;
+            fleet->produced += m.produced;
+            for (const auto &p : m.products) fp[p.first] += p.second;
+        }
+        for (const auto &pc : fp) fleet->products.push_back(pc);
+        std::sort(fleet->products.begin(), fleet->products.end(),
+                  [](const auto &a, const auto &b) { return a.second > b.second; });
+    }
+}
+
+static std::string api_shifts(const SampleSet &ss, long long from, long long to,
+                              const std::string &machine)
+{
+    std::vector<ShiftWin> wins;
+    build_shifts(from, to, wins);
+
+    std::string o;
+    fmt(o, "{\"from\":%lld,\"to\":%lld,\"shifts\":[", from, to);
+    bool firstShift = true;
+    for (const auto &w : wins) {
+        std::vector<ShiftMach> machs;
+        ShiftMach fleet;
+        shift_aggregate(ss, machine, w.ws, w.we, machs, &fleet);
+
+        if (!firstShift) o += ",";
+        firstShift = false;
+        fmt(o, "{\"shift\":\"%s\",\"date\":\"%s\",\"date_ts\":%lld,"
+               "\"start\":%lld,\"end\":%lld,\"ws\":%lld,\"we\":%lld,"
+               "\"label\":\"%s\",\"machines\":[",
+            w.day ? "day" : "night", w.date, w.dateTs,
+            w.start, w.end, w.ws, w.we, w.label);
+        bool firstMach = true;
+        for (const auto &m : machs) {
+            if (!firstMach) o += ",";
+            firstMach = false;
+            double util = m.power_sec > 0 ? (double)m.mach_sec / (double)m.power_sec : 0.0;
+            if (util > 1.0) util = 1.0;
+            fmt(o, "{\"machine\":\"%s\",\"mach_sec\":%lld,\"power_sec\":%lld,"
+                   "\"util_rate\":%.3f,\"produced\":%lld,\"products\":[",
+                m.name.c_str(), m.mach_sec, m.power_sec, util, m.produced);
+            bool firstP = true;
+            for (const auto &p : m.products) {
+                if (!firstP) o += ",";
+                firstP = false;
+                fmt(o, "{\"comment\":\"%s\",\"produced\":%lld}",
+                    json_escape(p.first).c_str(), p.second);
+            }
+            o += "]}";
+        }
+        o += "],";
+        double fut = fleet.power_sec > 0 ? (double)fleet.mach_sec / (double)fleet.power_sec : 0.0;
+        if (fut > 1.0) fut = 1.0;
+        fmt(o, "\"fleet\":{\"mach_sec\":%lld,\"power_sec\":%lld,"
+               "\"util_rate\":%.3f,\"produced\":%lld,\"products\":[",
+            fleet.mach_sec, fleet.power_sec, fut, fleet.produced);
+        bool firstFp = true;
+        for (const auto &p : fleet.products) {
+            if (!firstFp) o += ",";
+            firstFp = false;
+            fmt(o, "{\"comment\":\"%s\",\"produced\":%lld}",
+                json_escape(p.first).c_str(), p.second);
+        }
+        o += "]}}";
+    }
+    o += "]}";
+    return o;
+}
+
 std::string http_get(int port, const std::string &path, bool *ok)
 {
     std::string body;
@@ -781,12 +983,20 @@ void handle_request(SOCKET c, const ServerConfig &cfg,
             return;
         }
         if (ss.rows.empty()) {
-            r.send_json(200, "{\"items\":[]}");
+            if (path == "/api/stats/shifts") {
+                std::string body = "{\"from\":" + std::to_string(from) +
+                                   ",\"to\":" + std::to_string(to) + ",\"shifts\":[]}";
+                r.send_json(200, body);
+            } else {
+                r.send_json(200, "{\"items\":[]}");
+            }
             return;
         }
 
         std::string out;
-        if (path == "/api/stats/summary") {
+        if (path == "/api/stats/shifts") {
+            out = api_shifts(ss, from, to, machine);
+        } else if (path == "/api/stats/summary") {
             out = api_summary(ss);
         } else if (path == "/api/stats/machining") {
             out = api_machining(ss, bucket,

@@ -220,7 +220,53 @@ GET /api/stats/products?from=&to=&machine=ZXJ03
 
 ---
 
-## 7. 实时状态（转发 MTConnect agent）
+## 7. 班次统计（白班/夜班）
+
+```
+GET /api/stats/shifts?from=&to=&machine=ALL
+```
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| from / to | int | 是 | Unix 秒 |
+| machine | string | 是 | 机床名；`ALL` 返回各机台明细 + 全厂合计 |
+
+班次定义（AGENTS.md）：周一~周六 白班 08:30-20:30、夜班 20:30-次日 08:30；
+周日 白班 08:30-17:00、无夜班。查询区间与班次取交集统计（`ws/we` 为裁剪后窗口）。
+
+**响应**
+
+```json
+{
+  "from": 1784060800, "to": 1784095200,
+  "shifts": [
+    {
+      "shift": "day", "date": "2026-08-17", "date_ts": 1784291400,
+      "start": 1784291400, "end": 1784334600, "ws": 1784291400, "we": 1784334600,
+      "label": "白班 08:30-20:30",
+      "machines": [
+        { "machine": "ZXJ03", "mach_sec": 35000, "power_sec": 43200,
+          "util_rate": 0.81, "produced": 120,
+          "products": [ { "comment": "C-12-BRACKET-001/A0", "produced": 120 } ] }
+      ],
+      "fleet": { "mach_sec": 35000, "power_sec": 43200, "util_rate": 0.81,
+                 "produced": 120, "products": [ { "comment": "C-12-BRACKET-001/A0", "produced": 120 } ] }
+    }
+  ]
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| shift | `day` 白班 / `night` 夜班 |
+| date / date_ts | 班次起始本地日期 |
+| start / end | 完整班次区间；ws / we 为与查询区间相交的窗口 |
+| machines | 各机台统计（加工时长/开机时长/利用率/产量/分产品件数） |
+| fleet | 全厂合计（machine=ALL 时按机台汇总） |
+
+---
+
+## 8. 实时状态（转发 MTConnect agent）
 
 ```
 GET /api/live/current
