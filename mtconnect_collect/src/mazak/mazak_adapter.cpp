@@ -15,6 +15,7 @@
 #include "device_datum.hpp"
 #include "server.hpp"
 #include "service.hpp"
+#include "config.hpp"
 
 #define MAX_MZ_AXES 3
 #define MZ_BUF_SIZE (64 * 1024)
@@ -48,6 +49,7 @@ protected:
   int mDevicePort;
   const char *mDeviceIP;
   bool mConnected;
+  int mSocketTimeoutMs;
 
   void connect();
   void disconnect();
@@ -56,7 +58,7 @@ protected:
   void mapTag(const char *tag, const char *val);
 
 public:
-  MazakAdapter(int aPort);
+  MazakAdapter(int aPort, int aScanDelay = 100, int aSocketTimeout = 3000);
   ~MazakAdapter();
 
   virtual void initialize(int aArgc, const char *aArgv[]);
@@ -65,8 +67,8 @@ public:
   virtual void gatherDeviceData();
 };
 
-MazakAdapter::MazakAdapter(int aPort)
-  : Adapter(aPort, 100),
+MazakAdapter::MazakAdapter(int aPort, int aScanDelay, int aSocketTimeout)
+  : Adapter(aPort, aScanDelay),
     mAvail("avail"), mEstop("estop"), mExecution("execution"), mMode("mode"),
     mProgram("program"), mProgramInfo("programInfo"), mBlock("block"),
     mLine("line"), mPathFeedrate("pathFeedrate"), mPathPosition("pathPosition"),
@@ -105,6 +107,7 @@ MazakAdapter::MazakAdapter(int aPort)
 
   mConnected = false;
   mSock = INVALID_SOCKET;
+  mSocketTimeoutMs = aSocketTimeout;
   mDeviceIP = NULL;
   mDevicePort = 7878;
   mAvail.unavailable();
@@ -290,7 +293,7 @@ void MazakAdapter::getData()
   if (!mConnected) return;
 
   /* recv timeout so a stalled Mazak reply does not block the loop */
-  DWORD rcv_tmo = 3000;
+  DWORD rcv_tmo = (DWORD)mSocketTimeoutMs;
   setsockopt(mSock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&rcv_tmo, sizeof(rcv_tmo));
 
   if (send(mSock, cmd, (int)strlen(cmd), 0) == SOCKET_ERROR) {
@@ -350,7 +353,13 @@ int main(int aArgc, const char *aArgv[])
   if (aArgc >= 5)
     shdrPort = atoi(aArgv[4]);
 
-  MazakAdapter *adapter = new MazakAdapter(shdrPort);
+  cfg::Config c;
+  std::string cerr;
+  cfg::load(c, "", &cerr);
+  if (!cerr.empty()) fprintf(stderr, "[mazak_adapter] %s\n", cerr.c_str());
+
+  MazakAdapter *adapter = new MazakAdapter(shdrPort, c.mazak_scan_delay_ms,
+                                           c.mazak_socket_timeout_ms);
   adapter->setName("MTConnect Mazak Adapter");
   return adapter->main(aArgc, aArgv);
 }

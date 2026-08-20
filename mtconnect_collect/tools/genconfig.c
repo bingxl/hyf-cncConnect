@@ -238,7 +238,8 @@ static void write_devices_xml(const char *out_dir, const char *tpl_dir, Machine 
 }
 /* ---------- agent.cfg + adapters.txt ---------- */
 static void write_agent_cfg(const char *out_dir, Machine *m, int count,
-                            int http_port, const char *shdr_host)
+                            int http_port, const char *shdr_host,
+                            int monitor_config_files, int buffer_size)
 {
     char path[1024];
     FILE *f;
@@ -253,8 +254,8 @@ static void write_agent_cfg(const char *out_dir, Machine *m, int count,
     fprintf(f, "SchemaVersion = 2.7\n");
     fprintf(f, "WorkerThreads = 3\n");
     fprintf(f, "Port = %d\n", http_port);
-    fprintf(f, "BufferSize = 17\n");
-    fprintf(f, "MonitorConfigFiles = no\n");
+    fprintf(f, "BufferSize = %d\n", buffer_size);
+    fprintf(f, "MonitorConfigFiles = %s\n", monitor_config_files ? "yes" : "no");
     fprintf(f, "CreateUniqueIds = true\n\n");
 
     fprintf(f, "HttpHeaders {\n");
@@ -308,6 +309,8 @@ int main(int argc, char *argv[])
     int base_port = argc > 4 ? atoi(argv[4]) : 7878;
     const char *shdr_host = argc > 5 ? argv[5] : "127.0.0.1";
     const char *tpl_dir = argc > 6 ? argv[6] : "devices";
+    int monitor_config_files = argc > 7 ? atoi(argv[7]) : 0;
+    int buffer_size = argc > 8 ? atoi(argv[8]) : 17;
 
     Machine machines[MAX_MACHINES];
     int count = read_machines(argv[1], machines, MAX_MACHINES);
@@ -326,7 +329,8 @@ int main(int argc, char *argv[])
     }
 
     write_devices_xml(argv[2], tpl_dir, machines, count);
-    write_agent_cfg(argv[2], machines, count, http_port, shdr_host);
+    write_agent_cfg(argv[2], machines, count, http_port, shdr_host,
+                    monitor_config_files, buffer_size);
 
     printf("[genconfig] machine list:\n");
     for (int i = 0; i < count; i++)

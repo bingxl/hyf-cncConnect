@@ -123,7 +123,8 @@ bin\mtc_stats.exe stream [http_port] [db] [interval_ms] [prune_days] [alert_url]
 
 ### 2.1 环境要求
 
-- Windows + Visual Studio Build Tools（含 **x86 32 位** 组件，Fwlib32.lib 是 32 位）。
+- Windows + Visual Studio Build Tools（**仅 fanuc_adapter.exe 需要 x86 32 位组件**，
+  因为 Fwlib32.lib 是 32 位；其余全部编译为 x64）。
 - 依赖目录（本仓库的上一级 `third_party/`）：
   - `third_party/fwlib/`（Fwlib32.dll / Fwlib32.lib / fwlib32.h）
   - `third_party/mtconnect-agent/bin/agent.exe`（缺省时 build.bat 会告警，需手动放入 `agent/`）
@@ -137,6 +138,15 @@ build.bat
 ```
 
 首次运行自动探测 vcvarsall 并缓存到 `.vsbuild_cache`。产物在 `bin/`：
+
+> 架构：`fanuc_adapter.exe` 为 **x86**，其余 exe 全部为 **x64**（build.bat 会先以
+> x86 编译 FANUC 适配器，再切换 x64 编译其余目标）。
+
+MySQL/MariaDB 后端（config.json `db.type=mysql`）：编译时设置环境变量
+`MTC_MYSQL_ROOT` 指向含 `include\mysql.h` 与 `lib\libmariadb.lib`（或
+`libmysql.lib`）的客户端目录；未设置时程序运行时报 “MySQL/MariaDB client
+library not available”。连接参数（host/port/user/password/database）在
+config.json `db` 节配置。
 
 ```
 fanuc_adapter.exe  mazak_adapter.exe  genconfig.exe
@@ -241,6 +251,33 @@ bin\mtc_stats.exe prune stats.db 90                % 手动保留清理
 ### 4.3 Web 报表
 
 访问 `http://<服务器>:8088`：
+
+## 配置文件 config.json
+
+所有可配置项（端口、路径、数据库、采集间隔/超时、保留策略、告警、适配器参数、日志目录）
+统一放在 `config.json` 中：
+
+- 查找顺序：`<项目根>/config.json` → `./config.json` → `%USERPROFILE%\mtconnect\config.json`
+- 找不到时使用内置默认值，并自动把默认配置写入 `config.json`（优先项目根）
+- 命令行参数仍可覆盖配置文件（如 `mtc_ctl start 6000 7878`）
+
+常用项：
+
+| 键 | 默认 | 说明 |
+|----|------|------|
+| agent.http_port / shdr_base_port | 5000 / 7878 | agent HTTP / SHDR 起始端口 |
+| agent.monitor_config_files | false | agent 配置热加载（true 时改 Devices.xml 自动生效） |
+| agent.buffer_size | 17 | agent 事件缓冲 |
+| db.type / db.path | sqlite / stats.db | 数据库类型（mysql/postgres 预留）与文件路径 |
+| stats.stream_interval_ms | 5000 | 增量采集间隔 |
+| stats.power_gap_max | 90 | 相邻样本间隔超过视为断联（秒） |
+| stats.retention_days | 90 | 采样保留天数 |
+| stats.alert_url / alert_min | "" / 60 | 告警 webhook 与重复间隔 |
+| web.port / web.web_root | 8088 / web/dist | Web 服务端口与静态目录 |
+| web.max_rows / default_bucket_sec | 1000000 / 1800 | 单次统计最大行数 / 默认分桶 |
+| fanuc.connect_timeout_sec | 10 | FOCAS 连接超时（秒） |
+| fanuc.comment_retry_ms | 5000 | 程序注释 UNKNOWN 重试间隔 |
+| log.dir | log | 日志目录 |
 
 | 页面 | 功能 |
 |------|------|

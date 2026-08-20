@@ -81,6 +81,9 @@ public:
 /* 打开数据库（按 Config::backend 分发）；失败返回 nullptr 并填充 err */
 std::unique_ptr<Database> open(const Config &cfg, std::string *err);
 
+/* MySQL/MariaDB 后端（db_mysql.cpp；未编译客户端库时为 stub） */
+std::unique_ptr<Database> open_mysql(const Config &cfg, std::string *err);
+
 const char *backend_name(Backend b);
 
 } // namespace db

@@ -1,0 +1,50 @@
+{
+  "agent": {
+    "http_port": 5000,
+    "shdr_base_port": 7878,
+    "agent_dir": "agent",
+    "devices_dir": "devices",
+    "monitor_config_files": false,
+    "buffer_size": 17
+  },
+  "db": {
+    "type": "sqlite",
+    "path": "stats.db",
+    "host": "",
+    "port": 0,
+    "user": "",
+    "password": "",
+    "database": ""
+  },
+  "stats": {
+    "stream_interval_ms": 5000,
+    "poll_interval_sec": 5,
+    "sample_count": 1000,
+    "receive_timeout_ms": 15000,
+    "power_gap_max": 90,
+    "retention_days": 90,
+    "prune_interval_sec": 3600,
+    "alert_url": "",
+    "alert_min": 60
+  },
+  "web": {
+    "port": 8088,
+    "web_root": "web/dist",
+    "agent_port": 5000,
+    "max_rows": 1000000,
+    "default_bucket_sec": 1800
+  },
+  "fanuc": {
+    "connect_timeout_sec": 10,
+    "reconnect_wait_ms": 5000,
+    "scan_delay_ms": 100,
+    "comment_retry_ms": 5000
+  },
+  "mazak": {
+    "scan_delay_ms": 100,
+    "socket_timeout_ms": 3000
+  },
+  "log": {
+    "dir": "log"
+  }
+}

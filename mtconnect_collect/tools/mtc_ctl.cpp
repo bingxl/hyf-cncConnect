@@ -39,6 +39,8 @@
 #include <map>
 #include <algorithm>
 
+#include "config.hpp"
+
 #pragma comment(lib, "winhttp.lib")
 
 namespace {
@@ -362,6 +364,10 @@ struct Options {
     std::string db = "stats.db";
     std::string webRoot = "web/dist";
     std::string alertUrl;
+    std::string logDir;
+    std::string devicesDir;
+    bool monitorConfig = false;
+    int bufferSize = 17;
     bool noPoll = false;
     bool noWeb = false;
     bool visible = false;
@@ -406,6 +412,14 @@ void resolve_paths(Options &o)
     if (GetFullPathNameA(o.root.c_str(), MAX_PATH, abs, nullptr))
         o.root = abs;
     if (o.agentDir.empty()) o.agentDir = join_path(o.root, "agent");
+    else if (o.agentDir.find(':') == std::string::npos)
+        o.agentDir = join_path(o.root, o.agentDir);
+    if (o.devicesDir.empty()) o.devicesDir = join_path(o.root, "devices");
+    else if (o.devicesDir.find(':') == std::string::npos)
+        o.devicesDir = join_path(o.root, o.devicesDir);
+    if (o.logDir.empty()) o.logDir = join_path(o.root, "log");
+    else if (o.logDir.find(':') == std::string::npos)
+        o.logDir = join_path(o.root, o.logDir);
     if (o.jichuang.empty()) {
         std::string local = join_path(o.root, "jichuang.txt");
         if (GetFileAttributesA(local.c_str()) != INVALID_FILE_ATTRIBUTES) {
@@ -471,7 +485,8 @@ int cmd_start(const Options &raw, bool simAll)
     {
         std::vector<std::string> args = {
             o.jichuang, o.agentDir, std::to_string(o.httpPort),
-            std::to_string(o.shdrBase), "127.0.0.1", join_path(o.root, "devices")
+            std::to_string(o.shdrBase), "127.0.0.1", o.devicesDir,
+            o.monitorConfig ? "1" : "0", std::to_string(o.bufferSize)
         };
         int rc = run_wait(join_path(o.root, "bin\\genconfig.exe"), args, o.root);
         if (rc != 0) {
@@ -480,7 +495,7 @@ int cmd_start(const Options &raw, bool simAll)
         }
     }
 
-    std::string logDir = join_path(o.root, "log");
+    std::string logDir = o.logDir;
     CreateDirectoryA(logDir.c_str(), nullptr);
 
     std::string binDir = join_path(o.root, "bin");
@@ -637,7 +652,7 @@ int cmd_poll(const Options &raw)
 {
     Options o = raw;
     resolve_paths(o);
-    std::string logDir = join_path(o.root, "log");
+    std::string logDir = o.logDir;
     CreateDirectoryA(logDir.c_str(), nullptr);
     std::vector<std::string> args = {
         "stream", std::to_string(o.httpPort), o.db,
@@ -659,7 +674,7 @@ int cmd_web(const Options &raw)
 {
     Options o = raw;
     resolve_paths(o);
-    std::string logDir = join_path(o.root, "log");
+    std::string logDir = o.logDir;
     CreateDirectoryA(logDir.c_str(), nullptr);
     DWORD pid = 0;
     if (!spawn_proc(join_path(o.root, "bin\\webserver.exe"),
@@ -734,6 +749,26 @@ int main(int argc, char *argv[])
 
     std::string cmd = lower_str(argv[1]);
     Options o;
+    /* config.json 提供默认值（./config.json -> %USERPROFILE%\mtconnect\config.json），
+       命令行参数仍可覆盖 */
+    cfg::Config c;
+    std::string cerr;
+    cfg::load(c, "", &cerr);
+    if (!cerr.empty()) fprintf(stderr, "[mtc_ctl] %s\n", cerr.c_str());
+    o.httpPort = c.agent_http_port;
+    o.shdrBase = c.shdr_base_port;
+    o.webPort = c.web_port;
+    o.pollIntervalMs = c.stream_interval_ms;
+    o.pruneDays = c.retention_days;
+    o.alertMin = c.alert_min;
+    o.alertUrl = c.alert_url;
+    o.db = c.db_path;
+    o.webRoot = c.web_root;
+    o.agentDir = c.agent_dir;
+    o.logDir = c.log_dir;
+    o.devicesDir = c.devices_dir;
+    o.monitorConfig = c.monitor_config_files;
+    o.bufferSize = c.agent_buffer_size;
     std::vector<std::string> positional;
     if (!parse_opts(argc, argv, 2, o, positional)) return 1;
 

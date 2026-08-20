@@ -3,7 +3,7 @@
 
 namespace db {
 
-static const char *kStatsSchema =
+static const char *kStatsTables =
     "CREATE TABLE IF NOT EXISTS samples("
     "  ts INTEGER NOT NULL,"
     "  machine VARCHAR(64) NOT NULL,"
@@ -11,7 +11,6 @@ static const char *kStatsSchema =
     "  program TEXT, comment TEXT,"
     "  part_total INTEGER, power INTEGER,"
     "  PRIMARY KEY(ts, machine));"
-    "CREATE INDEX IF NOT EXISTS idx_samples_machine ON samples(machine, ts);"
     "CREATE TABLE IF NOT EXISTS stream_state("
     "  key VARCHAR(64) PRIMARY KEY, value TEXT);"
     "CREATE TABLE IF NOT EXISTS alarms("
@@ -23,12 +22,11 @@ static const char *kStatsSchema =
     "  last_ts INTEGER NOT NULL,"
     "  end_ts INTEGER,"
     "  active INTEGER NOT NULL DEFAULT 1,"
-    "  PRIMARY KEY(machine, item_id, first_ts));"
-    "CREATE INDEX IF NOT EXISTS idx_alarms_machine ON alarms(machine, last_ts);";
+    "  PRIMARY KEY(machine, item_id, first_ts));";
 
 bool ensure_stats_schema(Database &d, std::string *err)
 {
-    if (!d.exec(kStatsSchema)) {
+    if (!d.exec(kStatsTables)) {
         if (err) *err = d.last_error();
         return false;
     }
@@ -39,6 +37,36 @@ bool ensure_stats_schema(Database &d, std::string *err)
             if (err) *err = d.last_error();
             return false;
         }
+    }
+    /* 索引：SQLite 支持 IF NOT EXISTS；MySQL 需先查询 information_schema */
+    if (d.backend() == Backend::Mysql) {
+        {
+            auto st = d.prepare(
+                "SELECT COUNT(*) FROM information_schema.statistics "
+                "WHERE table_schema = DATABASE() AND table_name = 'samples' "
+                "AND index_name = 'idx_samples_machine';");
+            if (st && st->step() && st->column_int(0) == 0 &&
+                !d.exec("CREATE INDEX idx_samples_machine ON samples(machine, ts);")) {
+                if (err) *err = d.last_error();
+                return false;
+            }
+        }
+        {
+            auto st = d.prepare(
+                "SELECT COUNT(*) FROM information_schema.statistics "
+                "WHERE table_schema = DATABASE() AND table_name = 'alarms' "
+                "AND index_name = 'idx_alarms_machine';");
+            if (st && st->step() && st->column_int(0) == 0 &&
+                !d.exec("CREATE INDEX idx_alarms_machine ON alarms(machine, last_ts);")) {
+                if (err) *err = d.last_error();
+                return false;
+            }
+        }
+    } else if (!d.exec(
+                   "CREATE INDEX IF NOT EXISTS idx_samples_machine ON samples(machine, ts);"
+                   "CREATE INDEX IF NOT EXISTS idx_alarms_machine ON alarms(machine, last_ts);")) {
+        if (err) *err = d.last_error();
+        return false;
     }
     return true;
 }

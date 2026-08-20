@@ -35,6 +35,7 @@
 #include "fanuc_adapter.hpp"
 #include "server.hpp"
 #include "string_buffer.hpp"
+#include "config.hpp"
 
 int main(int aArgc, const char *aArgv[])
 {
@@ -47,7 +48,15 @@ int main(int aArgc, const char *aArgv[])
   if (aArgc >= 5)
     shdrPort = atoi(aArgv[4]);
 
-  FanucAdapter *adapter = new FanucAdapter(shdrPort);
+  cfg::Config c;
+  std::string cerr;
+  cfg::load(c, "", &cerr);
+  if (!cerr.empty()) fprintf(stderr, "[fanuc_adapter] %s\n", cerr.c_str());
+
+  FanucAdapter *adapter = new FanucAdapter(shdrPort, c.fanuc_scan_delay_ms);
+  adapter->setConnectTimeout(c.fanuc_connect_timeout_sec);
+  adapter->setReconnectWait(c.fanuc_reconnect_wait_ms);
+  adapter->setCommentRetry(c.fanuc_comment_retry_ms);
   adapter->setName("MTConnect Fanuc Adapter");
   return adapter->main(aArgc, aArgv);
 }

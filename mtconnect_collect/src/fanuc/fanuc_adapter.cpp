@@ -38,8 +38,8 @@
 #endif
 #include "minIni.h"
 
-FanucAdapter::FanucAdapter(int aPort) : 
-  Adapter(aPort), 
+FanucAdapter::FanucAdapter(int aPort, int aScanDelay) : 
+  Adapter(aPort, aScanDelay), 
   mAvail("avail"), mExecution("execution"), mLine("line"),
   mPathFeedrate("pathFeedrate"), 
   mProgram("program"), mBlock("block"), mProgramInfo("programInfo"),
@@ -75,6 +75,11 @@ FanucAdapter::FanucAdapter(int aPort) :
   addDatum(mPathPosition);
 
   mConfigured = mConnected = false;
+  mCommentUnknown = false;
+  mCommentNextRetry = 0;
+  mConnectTimeoutSec = 10;
+  mReconnectWaitMs = 5000;
+  mCommentRetryMs = 5000;
   mAxisCount = mSpindleCount = mMacroSampleCount = mPMCCount =
                mMacroPathCount = 0;
   mXPathIndex = mYPathIndex = mZPathIndex = -1;
@@ -395,7 +400,7 @@ void FanucAdapter::connect()
     return;
           
   printf("Connecting to Machine at %s and port %d\n", mDeviceIP, mDevicePort);
-  short ret = ::cnc_allclibhndl3(mDeviceIP, mDevicePort, 10, &mFlibhndl);
+  short ret = ::cnc_allclibhndl3(mDeviceIP, mDevicePort, mConnectTimeoutSec, &mFlibhndl);
   printf("Result: %d\n", ret);
   if (ret == EW_OK) 
   {
@@ -424,7 +429,7 @@ void FanucAdapter::connect()
   {
     mConnected = false;
     unavailable();
-    Sleep(5000);
+    Sleep(mReconnectWaitMs);
   }  
 }
 
@@ -459,6 +464,10 @@ void FanucAdapter::getPositions()
     mProgramNum = dyn.prgnum;
     sprintf(buf, "%d.%d", dyn.prgmnum, dyn.prgnum);
     if (mProgram.setValue(buf))
+      getHeader();
+
+    /* 注释读取失败(UNKNOWN)时定时重试，避免一直缓存到换程序才恢复 */
+    if (mCommentUnknown && GetTickCount() >= mCommentNextRetry)
       getHeader();
             
     mPathFeedrate.setValue(dyn.actf);
@@ -793,7 +802,7 @@ int FanucAdapter::getProgramComment(char *out, int size)
     count = 4;
     memset(dir, 0, sizeof(dir));
     ret = cnc_rdprogdir3(mFlibhndl, 2, &top, &count, dir);
-    if (ret == EW_BUSY && ++attempts < 5) { Sleep(50); continue; }
+    if (ret == EW_BUSY && ++attempts < 8) { Sleep(100); continue; }
     if (ret != EW_OK) break;
     if (count <= 0) break;
     if (count > 4) count = 4;
@@ -815,7 +824,7 @@ int FanucAdapter::getProgramComment(char *out, int size)
     for (;;) {
       count2 = CNC_MAX_PROGRAMS;
       ret2 = cnc_rdprogdir2(mFlibhndl, 2, &top2, &count2, dir2);
-      if (ret2 == EW_BUSY && ++attempts < 5) { Sleep(50); continue; }
+      if (ret2 == EW_BUSY && ++attempts < 8) { Sleep(100); continue; }
       if (ret2 != EW_OK) return -1;
       if (count2 <= 0) return -1;
       if (count2 > CNC_MAX_PROGRAMS) count2 = CNC_MAX_PROGRAMS;
@@ -836,6 +845,7 @@ int FanucAdapter::getProgramComment(char *out, int size)
 void FanucAdapter::getHeader()
 {
   char comment[64];
+  mCommentUnknown = false;
 
   if (!mConnected || mProgramNum <= 0)
     return;
@@ -843,5 +853,9 @@ void FanucAdapter::getHeader()
   if (getProgramComment(comment, sizeof(comment)) == 0)
     mProgramInfo.setValue(comment);
   else
+  {
     mProgramInfo.setValue("UNKNOWN");
+    mCommentUnknown = true;
+    mCommentNextRetry = GetTickCount() + mCommentRetryMs;
+  }
 }

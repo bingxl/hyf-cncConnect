@@ -23,10 +23,12 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <set>
 #include <cstdarg>
 
 #include "db/db.hpp"
 #include "db/stats_db.hpp"
+#include "config.hpp"
 
 #pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "ws2_32.lib")
@@ -34,10 +36,11 @@
 namespace {
 
 const size_t MAX_HTTP = 65536;
-const size_t MAX_ROWS = 1000000;
 const int SAMPLE_INTERVAL_DEFAULT = 10;
-/* 相邻样本间隔超过该值视为断联/关机：该时段不计入开机时间与加工时间 */
-const long long POWER_GAP_MAX = 90;
+/* 以下由 config.json 覆盖（web.max_rows / stats.power_gap_max / web.default_bucket_sec） */
+static size_t g_max_rows = 1000000;
+static long long g_power_gap_max = 90;
+static int g_default_bucket_sec = 1800;
 
 /* ---------- small string helpers ---------- */
 std::string url_decode(const std::string &src)
@@ -150,7 +153,7 @@ static long long mach_sec_range(const SampleSet &ss, const std::string &machine)
     for (const auto &s : ss.rows) {
         if (!machine.empty() && s.machine != machine) continue;
         if (prev && is_machining(*prev) && s.ts > prev->ts &&
-            s.ts - prev->ts <= POWER_GAP_MAX)
+            s.ts - prev->ts <= g_power_gap_max)
             total += s.ts - prev->ts;
         prev = &s;
     }
@@ -165,7 +168,7 @@ static long long power_sec_range(const SampleSet &ss, const std::string &machine
     for (const auto &s : ss.rows) {
         if (!machine.empty() && s.machine != machine) continue;
         if (prev && prev->power != 0 && s.ts > prev->ts &&
-            s.ts - prev->ts <= POWER_GAP_MAX)
+            s.ts - prev->ts <= g_power_gap_max)
             total += s.ts - prev->ts;
         prev = &s;
     }
@@ -184,7 +187,7 @@ bool load_samples(db::Database *db, long long from, long long to,
     const char *sql = machine.empty() ? sqlAll : sqlOne;
 
     ss->rows.clear();
-    ss->rows.reserve(MAX_ROWS);
+    ss->rows.reserve(g_max_rows);
     ss->first_ts = ss->last_ts = 0;
     ss->interval_sec = SAMPLE_INTERVAL_DEFAULT;
 
@@ -194,7 +197,7 @@ bool load_samples(db::Database *db, long long from, long long to,
     st->bind_int64(2, to);
     if (!machine.empty()) st->bind_text(3, machine);
 
-    while (ss->rows.size() < MAX_ROWS && st->step()) {
+    while (ss->rows.size() < g_max_rows && st->step()) {
         Sample r;
         r.ts = st->column_int64(0);
         r.machine = st->column_text(1);
@@ -318,7 +321,7 @@ std::string api_machining(const SampleSet &ss, int bucket, const std::string &ma
         scnts[b]++;
         if (is_machining(s)) cnts[b]++;
         const Sample *prev = prevs[s.machine];
-        if (prev && s.ts > prev->ts && s.ts - prev->ts <= POWER_GAP_MAX) {
+        if (prev && s.ts > prev->ts && s.ts - prev->ts <= g_power_gap_max) {
             long long t0 = prev->ts, t1 = s.ts;
             for (long long bb = (t0 / bucket) * bucket; bb < t1; bb += bucket) {
                 long long lo = bb > t0 ? bb : t0;
@@ -415,7 +418,7 @@ std::string api_products(const SampleSet &ss, const std::string &label,
         const Sample *prev = prevs[s.machine];
         if (prev) {
             if (is_machining(*prev) && s.ts > prev->ts &&
-                s.ts - prev->ts <= POWER_GAP_MAX) {
+                s.ts - prev->ts <= g_power_gap_max) {
                 for (auto &p : list)
                     if (p.comment == prev->comment) {
                         p.mach_sec += s.ts - prev->ts;
@@ -488,7 +491,7 @@ static void build_shifts(long long from, long long to, std::vector<ShiftWin> &ou
     localtime_s(&tt, &te);
 
     struct tm cur = tf;
-    for (int guard = 0; guard < 128; guard++) {
+    for (int guard = 0; guard < 512; guard++) {
         if (cur.tm_year > tt.tm_year ||
             (cur.tm_year == tt.tm_year && cur.tm_mon > tt.tm_mon) ||
             (cur.tm_year == tt.tm_year && cur.tm_mon == tt.tm_mon &&
@@ -544,14 +547,16 @@ static void shift_aggregate(const SampleSet &ss, const std::string &filter,
     std::map<std::string, long long> machSec, powerSec, produced;
     std::map<std::string, std::map<std::string, long long>> prodByComment;
     std::map<std::string, const Sample *> prevs;
+    std::set<std::string> present; /* 窗口内出现过的机床（含纯待机） */
 
     for (const auto &s : ss.rows) {
         if (s.ts < ws || s.ts >= we) continue;
         if (!filter.empty() && s.machine != filter) continue;
+        present.insert(s.machine);
         const Sample *prev = prevs[s.machine];
         if (prev) {
             long long dt = s.ts - prev->ts;
-            if (dt > 0 && dt <= POWER_GAP_MAX) {
+            if (dt > 0 && dt <= g_power_gap_max) {
                 if (is_machining(*prev)) machSec[s.machine] += dt;
                 if (prev->power != 0) powerSec[s.machine] += dt;
             }
@@ -565,13 +570,13 @@ static void shift_aggregate(const SampleSet &ss, const std::string &filter,
         prevs[s.machine] = &s;
     }
 
-    for (const auto &kv : machSec) {
+    for (const auto &name : present) {
         ShiftMach m;
-        m.name = kv.first;
-        m.mach_sec = kv.second;
-        m.power_sec = powerSec[kv.first];
-        m.produced = produced[kv.first];
-        for (const auto &pc : prodByComment[kv.first])
+        m.name = name;
+        m.mach_sec = machSec[name];
+        m.power_sec = powerSec[name];
+        m.produced = produced[name];
+        for (const auto &pc : prodByComment[name])
             if (!pc.first.empty() && pc.second > 0)
                 m.products.push_back(pc);
         std::sort(m.products.begin(), m.products.end(),
@@ -970,7 +975,7 @@ void handle_request(SOCKET c, const ServerConfig &cfg,
     if (path.compare(0, 11, "/api/stats/") == 0) {
         long long from = q.get_ll("from", (long long)time(nullptr) - 86400);
         long long to = q.get_ll("to", (long long)time(nullptr));
-        int bucket = q.get_int("bucket", 1800);
+        int bucket = q.get_int("bucket", g_default_bucket_sec);
         std::string machine;
         if (const std::string *v = q.get("machine")) machine = *v;
         bool all = (machine == "ALL");          /* machine=ALL -> 全厂汇总 */
@@ -1071,12 +1076,33 @@ DWORD WINAPI client_thread(LPVOID lp)
 
 int main(int argc, char *argv[])
 {
-    int port = argc > 1 ? atoi(argv[1]) : 8088;
-    const char *dbpath = argc > 2 ? argv[2] : "stats.db";
+    cfg::Config c;
+    std::string cerr;
+    cfg::load(c, "", &cerr);
+    if (!cerr.empty()) fprintf(stderr, "[webserver] %s\n", cerr.c_str());
+
+    int port = c.web_port;
     ServerConfig cfg;
-    cfg.dbcfg.file = argc > 2 ? argv[2] : "stats.db";
-    cfg.agent_port = argc > 3 ? atoi(argv[3]) : 5000;
-    cfg.web_root = argc > 4 ? argv[4] : "web/dist";
+    cfg.dbcfg.backend = c.db_type == "mysql" ? db::Backend::Mysql
+                       : c.db_type == "postgres" ? db::Backend::Postgres
+                                                 : db::Backend::Sqlite;
+    cfg.dbcfg.file = c.db_path;
+    cfg.dbcfg.host = c.db_host;
+    cfg.dbcfg.port = c.db_port;
+    cfg.dbcfg.user = c.db_user;
+    cfg.dbcfg.password = c.db_password;
+    cfg.dbcfg.database = c.db_database;
+    cfg.agent_port = c.web_agent_port;
+    cfg.web_root = c.web_root;
+    g_max_rows = c.web_max_rows;
+    g_power_gap_max = c.power_gap_max;
+    g_default_bucket_sec = c.web_default_bucket_sec;
+
+    /* 命令行参数覆盖（兼容旧用法） */
+    if (argc > 1) port = atoi(argv[1]);
+    if (argc > 2) cfg.dbcfg.file = argv[2];
+    if (argc > 3) cfg.agent_port = atoi(argv[3]);
+    if (argc > 4) cfg.web_root = argv[4];
 
     WSADATA wsa;
     WSAStartup(MAKEWORD(2, 2), &wsa);
@@ -1096,7 +1122,7 @@ int main(int argc, char *argv[])
     }
     listen(srv, 16);
     printf("webserver listening on %d (db=%s agent=%d web=%s)\n",
-           port, dbpath, cfg.agent_port, cfg.web_root.c_str());
+           port, cfg.dbcfg.file.c_str(), cfg.agent_port, cfg.web_root.c_str());
 
     u_long mode = 1;
     ioctlsocket(srv, FIONBIO, &mode);

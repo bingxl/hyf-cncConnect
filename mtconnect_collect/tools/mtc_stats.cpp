@@ -40,6 +40,7 @@
 
 #include "db/db.hpp"
 #include "db/stats_db.hpp"
+#include "config.hpp"
 
 #pragma comment(lib, "winhttp.lib")
 
@@ -48,7 +49,13 @@ namespace {
 constexpr int kDefaultPort = 5000;
 constexpr int kDefaultIntervalMs = 5000;   /* stream 默认采集间隔 */
 constexpr int kSampleCount = 1000;         /* 每次 /sample 最多拉取的事件数 */
-constexpr int kReceiveTimeoutMs = 15000;   /* 流式读取无数据时的超时 */
+/* 以下由 config.json 覆盖（stats.receive_timeout_ms / stats.power_gap_max） */
+static int g_receive_timeout_ms = 15000;
+static long long g_power_gap_max = 90;
+static int g_sample_count = 1000;
+static db::Backend g_db_backend = db::Backend::Sqlite;
+static std::string g_db_host, g_db_user, g_db_password, g_db_database;
+static int g_db_port = 0;
 
 /* ------------------------------------------------------------------ */
 /* 小工具                                                              */
@@ -175,7 +182,6 @@ struct MachineState {
 using StateMap = std::map<std::string, MachineState>;
 
 /* 相邻样本间隔超过该值视为断联/关机：该时段不计入开机时间与加工时间 */
-static const long long kPowerGapMax = 90;
 
 bool is_machining(const MachineState &s)
 {
@@ -382,7 +388,7 @@ public:
         session_ = WinHttpOpen(L"mtc-stats/2.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
                                WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
         if (session_)
-            WinHttpSetTimeouts(session_, 0, 5000, 15000, kReceiveTimeoutMs);
+            WinHttpSetTimeouts(session_, 0, 5000, 15000, g_receive_timeout_ms);
     }
     ~Http() { if (session_) WinHttpCloseHandle(session_); }
     explicit operator bool() const { return session_ != nullptr; }
@@ -474,7 +480,13 @@ static bool open_db(const std::string &path,
                     std::unique_ptr<db::Statement> &upsert)
 {
     db::Config cfg;
+    cfg.backend = g_db_backend;
     cfg.file = path;
+    cfg.host = g_db_host;
+    cfg.port = g_db_port;
+    cfg.user = g_db_user;
+    cfg.password = g_db_password;
+    cfg.database = g_db_database;
     std::string err;
     dbs = db::open(cfg, &err);
     if (!dbs) {
@@ -736,7 +748,7 @@ int cmd_stream(int port, const std::string &dbpath, int intervalMs, int pruneDay
     sync_alarms(*dbs, states, activeAlarms, (long long)time(nullptr));
 
     printf("[mtc_stats] streaming /sample?from=%lld count=%d interval=%dms -> %s\n",
-           seq, kSampleCount, intervalMs, dbpath.c_str());
+           seq, g_sample_count, intervalMs, dbpath.c_str());
     if (pruneDays > 0)
         printf("[mtc_stats] retention: prune samples older than %d days (hourly)\n",
                pruneDays);
@@ -748,7 +760,7 @@ int cmd_stream(int port, const std::string &dbpath, int intervalMs, int pruneDay
     for (;;) {
         char path[256];
         snprintf(path, sizeof(path), "/sample?from=%lld&count=%d&frequency=1",
-                 seq, kSampleCount);
+                 seq, g_sample_count);
 
         bool ok = false;
         StreamParser parser;
@@ -930,7 +942,7 @@ int cmd_report(const std::string &dbpath, int bucketSec, long long from, long lo
                 long long b = (r.ts / bucketSec) * bucketSec;
                 bucket_cnt[b]++;
             }
-            if (prev && r.ts > prev->ts && r.ts - prev->ts <= kPowerGapMax) {
+            if (prev && r.ts > prev->ts && r.ts - prev->ts <= g_power_gap_max) {
                 long long t0 = prev->ts, t1 = r.ts;
                 for (long long b = (t0 / bucketSec) * bucketSec; b < t1; b += bucketSec) {
                     long long lo = b > t0 ? b : t0;
@@ -1046,6 +1058,23 @@ int main(int argc, char *argv[])
 {
     SetConsoleOutputCP(CP_UTF8); /* keep UTF-8 output readable on GBK consoles */
     setvbuf(stdout, NULL, _IONBF, 0); /* 重定向到文件时日志也能及时落盘 */
+
+    cfg::Config c;
+    std::string cerr;
+    cfg::load(c, "", &cerr);
+    if (!cerr.empty()) fprintf(stderr, "[mtc_stats] %s\n", cerr.c_str());
+    g_receive_timeout_ms = c.receive_timeout_ms;
+    g_power_gap_max = c.power_gap_max;
+    g_sample_count = c.sample_count;
+    g_db_backend = c.db_type == "mysql" ? db::Backend::Mysql
+                   : c.db_type == "postgres" ? db::Backend::Postgres
+                                             : db::Backend::Sqlite;
+    g_db_host = c.db_host;
+    g_db_port = c.db_port;
+    g_db_user = c.db_user;
+    g_db_password = c.db_password;
+    g_db_database = c.db_database;
+
     if (argc < 2) {
         printf("Usage:\n");
         printf("  %s stream [http_port] [db] [interval_ms] [prune_days] [alert_url] [alert_min]\n", argv[0]);
@@ -1063,26 +1092,26 @@ int main(int argc, char *argv[])
     }
 
     if (strcmp(argv[1], "stream") == 0) {
-        int port = argc > 2 ? atoi(argv[2]) : kDefaultPort;
-        std::string db = argc > 3 ? argv[3] : "stats.db";
-        int intervalMs = argc > 4 ? atoi(argv[4]) : kDefaultIntervalMs;
-        int pruneDays = argc > 5 ? atoi(argv[5]) : 0;
-        std::string alertUrl = argc > 6 ? argv[6] : "";
+        int port = argc > 2 ? atoi(argv[2]) : c.agent_http_port;
+        std::string db = argc > 3 ? argv[3] : c.db_path;
+        int intervalMs = argc > 4 ? atoi(argv[4]) : c.stream_interval_ms;
+        int pruneDays = argc > 5 ? atoi(argv[5]) : c.retention_days;
+        std::string alertUrl = argc > 6 ? argv[6] : c.alert_url;
         if (alertUrl == "-") alertUrl.clear();
-        int alertMin = argc > 7 ? atoi(argv[7]) : 60;
+        int alertMin = argc > 7 ? atoi(argv[7]) : c.alert_min;
         return cmd_stream(port, db, intervalMs, pruneDays, alertUrl, alertMin);
     }
 
     if (strcmp(argv[1], "poll") == 0) {
-        int port = argc > 2 ? atoi(argv[2]) : kDefaultPort;
-        int interval = argc > 3 ? atoi(argv[3]) : 5;
-        std::string db = argc > 4 ? argv[4] : "stats.db";
+        int port = argc > 2 ? atoi(argv[2]) : c.agent_http_port;
+        int interval = argc > 3 ? atoi(argv[3]) : c.poll_interval_sec;
+        std::string db = argc > 4 ? argv[4] : c.db_path;
         return cmd_poll(port, interval, db);
     }
 
     if (strcmp(argv[1], "report") == 0) {
-        std::string db = argc > 2 ? argv[2] : "stats.db";
-        int bucket = argc > 3 ? atoi(argv[3]) : 1800;
+        std::string db = argc > 2 ? argv[2] : c.db_path;
+        int bucket = argc > 3 ? atoi(argv[3]) : c.web_default_bucket_sec;
         long long from, to;
         time_t now = time(nullptr);
         if (argc > 5) {
@@ -1096,8 +1125,8 @@ int main(int argc, char *argv[])
     }
 
     if (strcmp(argv[1], "prune") == 0) {
-        std::string db = argc > 2 ? argv[2] : "stats.db";
-        long long days = argc > 3 ? _atoi64(argv[3]) : 90;
+        std::string db = argc > 2 ? argv[2] : c.db_path;
+        long long days = argc > 3 ? _atoi64(argv[3]) : c.retention_days;
         return cmd_prune(db, days);
     }
 

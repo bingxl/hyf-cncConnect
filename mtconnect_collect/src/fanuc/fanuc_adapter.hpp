@@ -141,6 +141,11 @@ protected:
   int mDevicePort;
   const char *mDeviceIP;
   int mProgramNum;
+  bool mCommentUnknown;    /* 上次读程序注释失败，需要定时重试 */
+  DWORD mCommentNextRetry; /* GetTickCount() 下次重试时间 */
+  int mConnectTimeoutSec;  /* cnc_allclibhndl3 连接超时（秒） */
+  int mReconnectWaitMs;    /* 连接失败后的等待时间（ms） */
+  int mCommentRetryMs;     /* UNKNOWN 注释重试间隔（ms） */
   ODBSYS mInfo;
   double mAxisDivisor[MAX_AXIS];
 
@@ -173,8 +178,12 @@ protected:
 
 
 public:
-  FanucAdapter(int aServerPort);
+  FanucAdapter(int aServerPort, int aScanDelay = 100);
   ~FanucAdapter();
+
+  void setConnectTimeout(int aSec) { mConnectTimeoutSec = aSec; }
+  void setReconnectWait(int aMs) { mReconnectWaitMs = aMs; }
+  void setCommentRetry(int aMs) { mCommentRetryMs = aMs; }
   
   // For Service
   virtual void initialize(int aArgc, const char *aArgv[]);

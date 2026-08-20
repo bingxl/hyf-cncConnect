@@ -112,8 +112,7 @@ std::unique_ptr<Database> open(const Config &cfg, std::string *err)
         return std::make_unique<SqliteDatabase>(conn);
     }
     case Backend::Mysql:
-        if (err) *err = "mysql backend not built yet";
-        return nullptr;
+        return open_mysql(cfg, err);
     case Backend::Postgres:
         if (err) *err = "postgres backend not built yet";
         return nullptr;
