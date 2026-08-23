@@ -77,8 +77,8 @@ export default function ShiftView({
   const machProdOption: echarts.EChartsOption = useMemo(
     () => ({
       tooltip: { trigger: 'axis' },
-      legend: { data: ['加工时长', '产量'] },
-      grid: { left: 60, right: 60, top: 40, bottom: 50 },
+      legend: { data: ['加工时长', '产量'], top: 0 },
+      grid: { left: 8, right: 8, top: 64, bottom: 8, containLabel: true },
       xAxis: { type: 'category', data: labels, axisLabel: { rotate: 30 } },
       yAxis: [
         { type: 'value', name: '加工时长(h)' },
@@ -108,7 +108,7 @@ export default function ShiftView({
   const utilOption: echarts.EChartsOption = useMemo(
     () => ({
       tooltip: { trigger: 'axis' },
-      grid: { left: 50, right: 30, top: 40, bottom: 50 },
+      grid: { left: 8, right: 8, top: 48, bottom: 8, containLabel: true },
       xAxis: { type: 'category', data: labels, axisLabel: { rotate: 30 } },
       yAxis: { type: 'value', name: '利用率(%)', max: 100 },
       series: [
@@ -128,8 +128,8 @@ export default function ShiftView({
   const productOption: echarts.EChartsOption = useMemo(
     () => ({
       tooltip: { trigger: 'axis' },
-      legend: { type: 'scroll' },
-      grid: { left: 50, right: 30, top: 40, bottom: 50 },
+      legend: { type: 'scroll', top: 0 },
+      grid: { left: 8, right: 8, top: 56, bottom: 8, containLabel: true },
       xAxis: { type: 'category', data: labels, axisLabel: { rotate: 30 } },
       yAxis: { type: 'value', name: '件' },
       series: productSeries,

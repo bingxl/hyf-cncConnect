@@ -25,7 +25,7 @@ export default function App() {
     <Layout style={{ minHeight: '100vh' }}>
       <Header style={{ display: 'flex', alignItems: 'center' }}>
         <div style={{ color: '#fff', fontSize: 18, fontWeight: 600, marginRight: 32 }}>
-          机床数据监控
+          机床数据浏览
         </div>
         <Menu
           theme="dark"
@@ -35,7 +35,7 @@ export default function App() {
           items={[
             { key: 'dashboard', icon: <DashboardOutlined />, label: '总览' },
             { key: 'stats', icon: <BarChartOutlined />, label: '加工统计' },
-            { key: 'live', icon: <MonitorOutlined />, label: '实时监控' },
+            { key: 'live', icon: <MonitorOutlined />, label: '实时状态' },
             { key: 'alarms', icon: <WarningOutlined />, label: '报警' },
           ]}
           style={{ flex: 1 }}

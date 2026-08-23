@@ -21,9 +21,14 @@ export default function Stats() {
   const [machines, setMachines] = useState<string[]>([])
   const [machine, setMachine] = useState<string>(ALL_MACHINES)
   const [range, setRange] = useState<[Dayjs, Dayjs]>([dayjs(), dayjs()])
-  /* 只按日期选择：from=开始日 00:00，to=结束日 24:00 */
+  /* 只按日期选择：from=开始日 00:00；
+     夜班 20:30 跨到次日 08:30，to 需延伸到次日 08:30，否则夜班被截断在 24:00
+     （后端按 ws<we 严格判交，白班 08:30 边界不会误入） */
   const from = useMemo(() => range[0].startOf('day').unix(), [range])
-  const to = useMemo(() => range[1].endOf('day').unix(), [range])
+  const to = useMemo(
+    () => range[1].startOf('day').add(1, 'day').add(8, 'hour').add(30, 'minute').unix(),
+    [range],
+  )
 
   useEffect(() => {
     apiMachines()
