@@ -9,6 +9,7 @@ lerna-debug.log*
 
 node_modules
 dist
+mtconnect_collect/web/dist/*
 dist-ssr
 coverage
 *.local
