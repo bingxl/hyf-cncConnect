@@ -19,6 +19,17 @@
  *      后台启动 Web 服务（webserver）
  *   mtc_ctl report [bucket] [from] [to] [--db PATH] [--root DIR]
  *      运行统计报表（mtc_stats report）
+ *   mtc_ctl install [--http-port N] [--shdr-base N] [--web-port N] [--root DIR]
+ *      安装 Windows 服务（服务二进制即 mtc_ctl.exe 本身，开机自启）
+ *   mtc_ctl uninstall
+ *      删除已安装的 Windows 服务
+ *
+ * Windows 服务说明:
+ *   - 服务 ImagePath 指向 mtc_ctl.exe 本身 + 专用命令字 `service` 及运行参数，
+ *     例如 `"C:\...\mtc_ctl.exe" service --root "C:\..." --http-port 5000`。
+ *   - 因此 SCM 启动时走的是独立命令字 `service`，与交互式 CLI 的
+ *     start/stop/status/... 互不冲突，化解“服务事件传参”与“本程序已有
+ *     命令行参数”之间的冲突。`service` 命令只能在 SCM 环境中运行。
  */
 
 #ifndef _CRT_SECURE_NO_WARNINGS
@@ -42,6 +53,7 @@
 #include "config.hpp"
 
 #pragma comment(lib, "winhttp.lib")
+#pragma comment(lib, "advapi32.lib")
 
 namespace {
 
@@ -186,26 +198,81 @@ std::map<std::wstring, std::vector<DWORD>> running_services(const std::wstring &
     return out;
 }
 
-void stop_services(const std::wstring &root)
+/* 优雅停止 root 下的服务进程：
+ *   阶段1：向各进程的控制台发送 CTRL_BREAK（请求优雅退出；装了信号处理器的
+ *           子进程如 cnc_sim 会走清理路径，其余控制台程序按默认 SIGBREAK 退出）。
+ *   阶段2：最多等 graceMs 毫秒，让进程自行落盘/退出（整体等待被封顶到 graceMs）。
+ *   阶段3：仍存活者强制结束（TerminateProcess），保证 stop 不会卡死。
+ *   graceMs=0 表示不发送信号、不等待，直接强制结束。 */
+void stop_services(const std::wstring &root, DWORD graceMs = 5000)
 {
-    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snap == INVALID_HANDLE_VALUE) return;
-    PROCESSENTRY32W pe;
-    pe.dwSize = sizeof(pe);
-    for (BOOL ok = Process32FirstW(snap, &pe); ok; ok = Process32NextW(snap, &pe)) {
-        if (!is_service_name(pe.szExeFile)) continue;
+    /* 收集 root 下待停止的进程 PID */
+    std::vector<DWORD> pids;
+    {
+        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if (snap == INVALID_HANDLE_VALUE) return;
+        PROCESSENTRY32W pe;
+        pe.dwSize = sizeof(pe);
+        for (BOOL ok = Process32FirstW(snap, &pe); ok; ok = Process32NextW(snap, &pe)) {
+            if (!is_service_name(pe.szExeFile)) continue;
+            HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pe.th32ProcessID);
+            wchar_t path[MAX_PATH];
+            DWORD sz = MAX_PATH;
+            if (h && QueryFullProcessImageNameW(h, 0, path, &sz) &&
+                path_under_root(path, root))
+                pids.push_back(pe.th32ProcessID);
+            if (h) CloseHandle(h);
+        }
+        CloseHandle(snap);
+    }
+    if (pids.empty()) return;
+
+    if (graceMs > 0) {
+        printf("  requesting graceful stop (%zu process(es), wait up to %lu ms) ...\n",
+               pids.size(), graceMs);
+
+        /* 阶段1：AttachConsole 到每个子进程的控制台，发送 CTRL_BREAK 请求退出。
+           发送前装一个忽略处理器，防止 Ctrl 事件把 mtc_ctl 自己一起杀掉。 */
+        bool hadConsole = GetConsoleWindow() != nullptr;
+        if (hadConsole) FreeConsole();
+        SetConsoleCtrlHandler(nullptr, TRUE);          // 忽略 Ctrl+C / Ctrl+Break
+        for (DWORD pid : pids) {
+            if (AttachConsole(pid)) {
+                GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0);
+                FreeConsole();
+            }
+        }
+        SetConsoleCtrlHandler(nullptr, FALSE);         // 恢复
+        if (hadConsole) AttachConsole(ATTACH_PARENT_PROCESS);
+
+        /* 阶段2：并发等待所有进程自行退出，整体等待不超过 graceMs */
+        std::vector<HANDLE> waits;
+        for (DWORD pid : pids) {
+            HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, pid);
+            if (h) waits.push_back(h);
+        }
+        DWORD deadline = GetTickCount() + graceMs;
+        for (size_t i = 0; i < waits.size() && !waits.empty(); i++) {
+            DWORD now = GetTickCount();
+            DWORD remain = now >= deadline ? 0 : deadline - now;
+            if (remain == 0) break;
+            WaitForSingleObject(waits[i], remain);
+        }
+        for (HANDLE h : waits) CloseHandle(h);
+    }
+
+    /* 阶段3：仍存活者强制结束 */
+    for (DWORD pid : pids) {
         HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE,
-                               FALSE, pe.th32ProcessID);
-        wchar_t path[MAX_PATH];
-        DWORD sz = MAX_PATH;
-        if (h && QueryFullProcessImageNameW(h, 0, path, &sz) &&
-            path_under_root(path, root)) {
-            printf("  stopping %ls (PID %lu)\n", pe.szExeFile, pe.th32ProcessID);
+                               FALSE, pid);
+        if (!h) continue;
+        DWORD code = 0;
+        if (GetExitCodeProcess(h, &code) && code == STILL_ACTIVE) {
+            printf("  force-killing PID %lu (did not exit gracefully)\n", pid);
             TerminateProcess(h, 1);
         }
-        if (h) CloseHandle(h);
+        CloseHandle(h);
     }
-    CloseHandle(snap);
 }
 
 /* 启动子进程：可选重定向 stdout/stderr 到日志文件；visible=false 时隐藏窗口 */
@@ -704,6 +771,199 @@ int cmd_report(const Options &raw, const std::vector<std::string> &positional)
     return rc;
 }
 
+/* ------------------------------------------------------------------ */
+/* Windows 服务（install / uninstall / service）                        */
+/*   服务二进制即 mtc_ctl.exe 本身：SCM 以 `mtc_ctl.exe service [options]` */
+/*   启动。`service` 是专用命令字，与交互式 CLI 命令（start/stop/...）互不 */
+/*   冲突，从而化解“服务事件传参”与“本程序已有命令行参数”的冲突。          */
+/* ------------------------------------------------------------------ */
+
+static const wchar_t kMtcSvcName[] = L"mtc_ctl";
+static const wchar_t kMtcSvcDisplay[] = L"MTConnect 数据采集服务";
+
+static SERVICE_STATUS          g_svcStatus;
+static SERVICE_STATUS_HANDLE   g_svcHandle = nullptr;
+static HANDLE                  g_stopEvent = nullptr;
+static Options                 g_svcOptions;
+
+static VOID WINAPI SvcMain(DWORD dwArgc, LPWSTR *lpszArgv);
+static VOID WINAPI SvcCtrlHandler(DWORD ctrl);
+static void ReportSvcStatus(DWORD state, DWORD exitCode, DWORD waitHint);
+
+static VOID WINAPI SvcMain(DWORD, LPWSTR *)
+{
+    /* 服务进程没有控制台，把 stdout/stderr 重定向到 log\service.log */
+    if (!g_svcOptions.logDir.empty()) {
+        CreateDirectoryA(g_svcOptions.logDir.c_str(), nullptr);
+        std::string slog = join_path(g_svcOptions.logDir, "service.log");
+        freopen(slog.c_str(), "a", stdout);
+        freopen(slog.c_str(), "a", stderr);
+    }
+
+    g_svcHandle = RegisterServiceCtrlHandlerW(kMtcSvcName, SvcCtrlHandler);
+    if (!g_svcHandle) {
+        fprintf(stderr, "RegisterServiceCtrlHandler failed (%lu)\n", GetLastError());
+        return;
+    }
+    g_stopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    g_svcStatus.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
+    g_svcStatus.dwServiceSpecificExitCode = 0;
+
+    ReportSvcStatus(SERVICE_START_PENDING, NO_ERROR, 3000);
+
+    printf("[mtc_ctl] service starting (root: %s)\n", g_svcOptions.root.c_str());
+    int rc = cmd_start(g_svcOptions, false);
+    if (rc != 0) {
+        fprintf(stderr, "[mtc_ctl] service pipeline failed to start (rc=%d)\n", rc);
+        ReportSvcStatus(SERVICE_STOPPED, (DWORD)rc, 0);
+        return;
+    }
+    ReportSvcStatus(SERVICE_RUNNING, NO_ERROR, 0);
+    printf("[mtc_ctl] service running\n");
+
+    /* 一直运行，直到收到 STOP / SHUTDOWN 控制码 */
+    WaitForSingleObject(g_stopEvent, INFINITE);
+    ReportSvcStatus(SERVICE_STOPPED, NO_ERROR, 0);
+    printf("[mtc_ctl] service stopped\n");
+}
+
+static VOID WINAPI SvcCtrlHandler(DWORD ctrl)
+{
+    switch (ctrl) {
+    case SERVICE_CONTROL_STOP:
+    case SERVICE_CONTROL_SHUTDOWN:
+        ReportSvcStatus(SERVICE_STOP_PENDING, NO_ERROR, 8000);
+        printf("[mtc_ctl] stopping service ...\n");
+        /* 结束由本工具启动的 agent/采集器/统计/Web 子进程 */
+        if (!g_svcOptions.root.empty())
+            stop_services(utf8_to_wide(g_svcOptions.root));
+        if (g_stopEvent) SetEvent(g_stopEvent);
+        break;
+    default:
+        break;
+    }
+}
+
+static void ReportSvcStatus(DWORD state, DWORD exitCode, DWORD waitHint)
+{
+    static DWORD checkPoint = 1;
+    g_svcStatus.dwCurrentState = state;
+    g_svcStatus.dwWin32ExitCode = exitCode;
+    g_svcStatus.dwWaitHint = waitHint;
+    if (state == SERVICE_START_PENDING)
+        g_svcStatus.dwControlsAccepted = 0;
+    else
+        g_svcStatus.dwControlsAccepted = SERVICE_ACCEPT_STOP;
+    if (state == SERVICE_RUNNING || state == SERVICE_STOPPED)
+        g_svcStatus.dwCheckPoint = 0;
+    else
+        g_svcStatus.dwCheckPoint = checkPoint++;
+    if (g_svcHandle)
+        SetServiceStatus(g_svcHandle, &g_svcStatus);
+}
+
+/* 注册服务控制调度器并阻塞运行；若进程非 SCM 启动则失败并给出提示 */
+int cmd_service(const Options &raw)
+{
+    Options o = raw;
+    resolve_paths(o);
+    g_svcOptions = o;
+    SERVICE_TABLE_ENTRYW table[] = {
+        { (LPWSTR)kMtcSvcName, SvcMain },
+        { nullptr, nullptr }
+    };
+    if (!StartServiceCtrlDispatcherW(table)) {
+        DWORD err = GetLastError();
+        if (err == ERROR_FAILED_SERVICE_CONTROLLER_CONNECT) {
+            fprintf(stderr,
+                    "[ERROR] 'service' 命令只能由服务控制管理器(SCM)启动，不能直接在命令行运行。\n"
+                    "        请先安装服务: mtc_ctl install\n");
+            return 1;
+        }
+        fprintf(stderr, "[ERROR] StartServiceCtrlDispatcher failed (%lu)\n", err);
+        return 1;
+    }
+    return 0;
+}
+
+/* 安装/更新 Windows 服务：ImagePath 指向 mtc_ctl.exe 本身 + service 命令字 */
+int cmd_install(const Options &raw)
+{
+    Options o = raw;
+    resolve_paths(o);
+    char exe[MAX_PATH];
+    if (!GetModuleFileNameA(nullptr, exe, MAX_PATH)) {
+        fprintf(stderr, "[ERROR] cannot get module path (%lu)\n", GetLastError());
+        return 1;
+    }
+    std::string image = "\"" + std::string(exe) + "\" service --root \"" + o.root + "\""
+                        + " --http-port " + std::to_string(o.httpPort)
+                        + " --shdr-base " + std::to_string(o.shdrBase)
+                        + " --web-port " + std::to_string(o.webPort);
+
+    SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_ALL_ACCESS);
+    if (!scm) {
+        fprintf(stderr, "[ERROR] OpenSCManager failed (%lu). 需要管理员权限。\n", GetLastError());
+        return 1;
+    }
+    SC_HANDLE svc = OpenServiceW(scm, kMtcSvcName, SERVICE_ALL_ACCESS);
+    if (svc) {
+        if (!ChangeServiceConfigW(svc, SERVICE_NO_CHANGE, SERVICE_AUTO_START,
+                                  SERVICE_NO_CHANGE, utf8_to_wide(image).c_str(),
+                                  nullptr, nullptr, nullptr, nullptr, nullptr, nullptr)) {
+            fprintf(stderr, "[ERROR] ChangeServiceConfig failed (%lu)\n", GetLastError());
+            CloseServiceHandle(svc);
+            CloseServiceHandle(scm);
+            return 1;
+        }
+        printf("[mtc_ctl] service '%ls' updated\n", kMtcSvcName);
+    } else {
+        svc = CreateServiceW(scm, kMtcSvcName, kMtcSvcDisplay,
+                             SERVICE_ALL_ACCESS,
+                             SERVICE_WIN32_OWN_PROCESS,
+                             SERVICE_AUTO_START,
+                             SERVICE_ERROR_NORMAL,
+                             utf8_to_wide(image).c_str(),
+                             nullptr, nullptr, nullptr, nullptr, nullptr);
+        if (!svc) {
+            fprintf(stderr, "[ERROR] CreateService failed (%lu). 需要管理员权限。\n", GetLastError());
+            CloseServiceHandle(scm);
+            return 1;
+        }
+        printf("[mtc_ctl] service '%ls' installed (auto start)\n", kMtcSvcName);
+    }
+    printf("[mtc_ctl] image: %s\n", image.c_str());
+    CloseServiceHandle(svc);
+    CloseServiceHandle(scm);
+    return 0;
+}
+
+/* 删除 Windows 服务 */
+int cmd_uninstall(const Options &raw)
+{
+    SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_ALL_ACCESS);
+    if (!scm) {
+        fprintf(stderr, "[ERROR] OpenSCManager failed (%lu). 需要管理员权限。\n", GetLastError());
+        return 1;
+    }
+    SC_HANDLE svc = OpenServiceW(scm, kMtcSvcName, DELETE);
+    if (!svc) {
+        fprintf(stderr, "[ERROR] service '%ls' not installed (%lu)\n", kMtcSvcName, GetLastError());
+        CloseServiceHandle(scm);
+        return 1;
+    }
+    if (!DeleteService(svc)) {
+        fprintf(stderr, "[ERROR] DeleteService failed (%lu)\n", GetLastError());
+        CloseServiceHandle(svc);
+        CloseServiceHandle(scm);
+        return 1;
+    }
+    printf("[mtc_ctl] service '%ls' deleted\n", kMtcSvcName);
+    CloseServiceHandle(svc);
+    CloseServiceHandle(scm);
+    return 0;
+}
+
 void usage(const char *prog)
 {
     printf("MTConnect 采集服务控制台\n\n");
@@ -720,7 +980,11 @@ void usage(const char *prog)
     printf("  %s web [options]\n", prog);
     printf("      后台启动 Web 服务（webserver）\n");
     printf("  %s report [bucket] [from] [to] [options]\n", prog);
-    printf("      运行统计报表（默认 stats.db，1800s，最近24h）\n\n");
+    printf("      运行统计报表（默认 stats.db，1800s，最近24h）\n");
+    printf("  %s install [options]\n", prog);
+    printf("      安装/更新 Windows 服务（二进制即本程序，开机自启）\n");
+    printf("  %s uninstall\n", prog);
+    printf("      删除已安装的 Windows 服务\n\n");
     printf("options:\n");
     printf("  --http-port N   agent HTTP 端口 (默认 5000)\n");
     printf("  --shdr-base N   SHDR 起始端口 (默认 7878)\n");
@@ -791,6 +1055,9 @@ int main(int argc, char *argv[])
     if (cmd == "poll") return cmd_poll(o);
     if (cmd == "web") return cmd_web(o);
     if (cmd == "report") return cmd_report(o, positional);
+    if (cmd == "install") return cmd_install(o);
+    if (cmd == "uninstall" || cmd == "delete") return cmd_uninstall(o);
+    if (cmd == "service") return cmd_service(o);
 
     fprintf(stderr, "unknown command '%s'\n", argv[1]);
     usage(argv[0]);
